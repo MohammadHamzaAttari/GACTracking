@@ -39,7 +39,7 @@ export default function SettingsPage() {
                 <Label htmlFor="org-name">Organization Name</Label>
                 <Input
                   id="org-name"
-                  defaultValue="GetAI Chatbots"
+                  defaultValue="GAC Trackings"
                   data-testid="input-org-name"
                 />
               </div>
