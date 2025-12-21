@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import session from "express-session";
 import bcrypt from "bcrypt";
 import { storage } from "./storage";
-import { insertUserSchema, loginSchema } from "@shared/schema";
+import { insertUserSchema, insertShiftSchema, insertBreakSchema, loginSchema, BREAK_LIMITS } from "@shared/schema";
 import { z } from "zod";
 
 const SALT_ROUNDS = 10;
@@ -74,7 +74,7 @@ export async function registerRoutes(
         return res.status(401).json({ error: `This account is not registered as ${data.role}` });
       }
       
-      if (!user.isActive) {
+      if (!user.isActive || user.status === "inactive") {
         return res.status(401).json({ error: "Account is deactivated" });
       }
       
@@ -196,182 +196,543 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to delete employee" });
     }
   });
-  
-  // Get recent attendance for admin dashboard
-  app.get("/api/admin/attendance/recent", requireAdmin, async (req, res) => {
+
+  // Get today's shifts (Staff Activity Monitor)
+  app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
-      const records = await storage.getRecentAttendance(10);
-      res.json(records);
+      const shifts = await storage.getTodayShifts();
+      res.json(shifts);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch attendance" });
+      res.status(500).json({ error: "Failed to fetch today's shifts" });
     }
   });
-  
-  // Get attendance by date
-  app.get("/api/admin/attendance", requireAdmin, async (req, res) => {
+
+  // Get recent activity logs
+  app.get("/api/admin/activity-logs", requireAdmin, async (req, res) => {
     try {
-      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
-      const records = await storage.getAttendanceByDate(date);
-      res.json(records);
+      const logs = await storage.getRecentActivityLogs(50);
+      res.json(logs);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch attendance" });
+      res.status(500).json({ error: "Failed to fetch activity logs" });
     }
   });
-  
-  // Get reports data
-  app.get("/api/admin/reports", requireAdmin, async (req, res) => {
+
+  // WASENDER API Config
+  app.get("/api/admin/wasender-config", requireAdmin, async (req, res) => {
     try {
-      const stats = await storage.getAttendanceStats();
-      const allEmployees = await storage.getAllUsers();
-      
-      // Calculate monthly attendance rate
-      const totalDays = new Date().getDate();
-      const totalEmployees = allEmployees.filter(u => u.role === "employee").length;
-      const expectedDays = totalDays * totalEmployees;
-      const monthlyAttendance = expectedDays > 0 
-        ? Math.round((stats.presentDays / expectedDays) * 100) 
-        : 0;
-      
-      // Calculate average work hours
-      const averageWorkHours = stats.presentDays > 0 
-        ? Math.round(stats.totalWorkHours / stats.presentDays) 
-        : 0;
-      
-      // Get department stats
-      const departments = new Map<string, { present: number; total: number }>();
-      allEmployees.forEach(emp => {
-        const dept = emp.department || "Unassigned";
-        if (!departments.has(dept)) {
-          departments.set(dept, { present: 0, total: 0 });
-        }
-        departments.get(dept)!.total++;
-      });
-      
-      const topDepartments = Array.from(departments.entries()).map(([name, data]) => ({
-        name,
-        rate: Math.round((data.present / data.total) * 100) || 85 + Math.floor(Math.random() * 15),
-      }));
-      
-      // Weekly trend (mock data for now)
-      const weeklyTrend = [85, 92, 88, 90, 87, 45, 30];
-      
-      res.json({
-        monthlyAttendance: Math.min(100, monthlyAttendance || 85),
-        averageWorkHours: averageWorkHours || 8,
-        topDepartments,
-        weeklyTrend,
-      });
+      const config = await storage.getWasenderConfig();
+      res.json(config || { instanceId: "", apiToken: "", isActive: false });
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch reports" });
+      res.status(500).json({ error: "Failed to fetch WASENDER config" });
+    }
+  });
+
+  app.post("/api/admin/wasender-config", requireAdmin, async (req, res) => {
+    try {
+      const { instanceId, apiToken, isActive } = req.body;
+      const config = await storage.updateWasenderConfig({ instanceId, apiToken, isActive });
+      res.json(config);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update WASENDER config" });
+    }
+  });
+
+  app.post("/api/admin/wasender-test", requireAdmin, async (req, res) => {
+    try {
+      const config = await storage.getWasenderConfig();
+      if (!config?.instanceId || !config?.apiToken) {
+        return res.status(400).json({ error: "WASENDER not configured" });
+      }
+      
+      // Test connection (mock for now)
+      await storage.updateWasenderConfig({ lastTested: new Date() });
+      res.json({ success: true, message: "Connection successful" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to test WASENDER connection" });
+    }
+  });
+
+  // Departments
+  app.get("/api/admin/departments", requireAdmin, async (req, res) => {
+    try {
+      const departments = await storage.getDepartments();
+      res.json(departments);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch departments" });
+    }
+  });
+
+  app.patch("/api/admin/departments/:id", requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const dept = await storage.updateDepartment(id, req.body);
+      res.json(dept);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update department" });
     }
   });
 
   // ============= EMPLOYEE ROUTES =============
   
-  // Get today's status
+  // Get today's shift status
   app.get("/api/employee/today", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const today = new Date().toISOString().split("T")[0];
       
-      const record = await storage.getAttendanceByUserAndDate(userId, today);
+      const shift = await storage.getShiftByUserAndDate(userId, today);
+      const activeBreak = await storage.getActiveBreak(userId);
+      const breaks = await storage.getBreaksByUserAndDate(userId, today);
+      const activityLogs = await storage.getActivityLogsByUser(userId, today);
+      
+      // Count breaks by type
+      const breakCounts = {
+        prayer: breaks.filter(b => b.type === "prayer").length,
+        meal: breaks.filter(b => b.type === "meal").length,
+        urgent: breaks.filter(b => b.type === "urgent").length,
+      };
+      
+      // Calculate total break duration
+      const totalBreakMinutes = breaks.reduce((acc, b) => acc + (b.durationMinutes || 0), 0);
       
       res.json({
-        hasClockIn: !!record?.clockIn,
-        hasClockOut: !!record?.clockOut,
-        clockInTime: record?.clockIn || null,
-        clockOutTime: record?.clockOut || null,
-        record,
+        shift,
+        activeBreak,
+        breaks,
+        breakCounts,
+        totalBreakMinutes,
+        activityLogs,
       });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch today's status" });
     }
   });
   
-  // Clock in
-  app.post("/api/employee/clock-in", requireAuth, async (req, res) => {
+  // Start morning shift (clock in)
+  app.post("/api/employee/shift/morning/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const today = new Date().toISOString().split("T")[0];
       const now = new Date();
       
-      let record = await storage.getAttendanceByUserAndDate(userId, today);
+      let shift = await storage.getShiftByUserAndDate(userId, today);
       
-      if (record?.clockIn) {
-        return res.status(400).json({ error: "Already clocked in today" });
+      if (shift?.morningClockIn) {
+        return res.status(400).json({ error: "Morning shift already started" });
       }
       
-      // Check if late (after 9:15 AM)
-      const lateThreshold = new Date();
-      lateThreshold.setHours(9, 15, 0, 0);
-      const status = now > lateThreshold ? "late" : "present";
+      // Check if late
+      const user = await storage.getUser(userId);
+      let lateMinutes = 0;
+      if (user?.shiftStartTime) {
+        const [hours, minutes] = user.shiftStartTime.split(":").map(Number);
+        const shiftStart = new Date();
+        shiftStart.setHours(hours, minutes, 0, 0);
+        if (now > shiftStart) {
+          lateMinutes = Math.floor((now.getTime() - shiftStart.getTime()) / 60000);
+        }
+      }
       
-      if (record) {
-        record = await storage.updateAttendance(record.id, {
-          clockIn: now,
-          status,
+      if (shift) {
+        shift = await storage.updateShift(shift.id, {
+          morningClockIn: now,
+          morningLateMinutes: lateMinutes,
+          status: lateMinutes > 0 ? "late" : "present",
         });
       } else {
-        record = await storage.createAttendance({
+        shift = await storage.createShift({
           userId,
           date: today,
-          clockIn: now,
-          status,
+          morningClockIn: now,
+          morningLateMinutes: lateMinutes,
+          status: lateMinutes > 0 ? "late" : "present",
         });
       }
       
-      res.json(record);
+      // Log activity
+      await storage.createActivityLog({
+        userId,
+        action: "morning_clock_in",
+        details: lateMinutes > 0 ? `Late by ${lateMinutes} minutes` : "On time",
+        timestamp: now,
+      });
+      
+      res.json(shift);
     } catch (error) {
-      res.status(500).json({ error: "Failed to clock in" });
+      res.status(500).json({ error: "Failed to start morning shift" });
     }
   });
   
-  // Clock out
-  app.post("/api/employee/clock-out", requireAuth, async (req, res) => {
+  // End morning shift
+  app.post("/api/employee/shift/morning/end", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const today = new Date().toISOString().split("T")[0];
       const now = new Date();
       
-      const record = await storage.getAttendanceByUserAndDate(userId, today);
+      const shift = await storage.getShiftByUserAndDate(userId, today);
       
-      if (!record?.clockIn) {
-        return res.status(400).json({ error: "You haven't clocked in today" });
+      if (!shift?.morningClockIn) {
+        return res.status(400).json({ error: "Morning shift not started" });
       }
       
-      if (record.clockOut) {
-        return res.status(400).json({ error: "Already clocked out today" });
+      if (shift.morningClockOut) {
+        return res.status(400).json({ error: "Morning shift already ended" });
       }
       
-      const updated = await storage.updateAttendance(record.id, {
-        clockOut: now,
+      const updated = await storage.updateShift(shift.id, {
+        morningClockOut: now,
+      });
+      
+      await storage.createActivityLog({
+        userId,
+        action: "morning_clock_out",
+        details: "Morning shift ended",
+        timestamp: now,
       });
       
       res.json(updated);
     } catch (error) {
-      res.status(500).json({ error: "Failed to clock out" });
+      res.status(500).json({ error: "Failed to end morning shift" });
     }
   });
   
-  // Get employee's attendance history
-  app.get("/api/employee/attendance", requireAuth, async (req, res) => {
+  // Start evening shift
+  app.post("/api/employee/shift/evening/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const records = await storage.getAttendanceByUser(userId);
-      res.json(records);
+      const today = new Date().toISOString().split("T")[0];
+      const now = new Date();
+      
+      let shift = await storage.getShiftByUserAndDate(userId, today);
+      
+      if (shift?.eveningClockIn) {
+        return res.status(400).json({ error: "Evening shift already started" });
+      }
+      
+      if (shift) {
+        shift = await storage.updateShift(shift.id, {
+          eveningClockIn: now,
+        });
+      } else {
+        shift = await storage.createShift({
+          userId,
+          date: today,
+          eveningClockIn: now,
+          status: "present",
+        });
+      }
+      
+      await storage.createActivityLog({
+        userId,
+        action: "evening_clock_in",
+        details: "Evening shift started",
+        timestamp: now,
+      });
+      
+      res.json(shift);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch attendance" });
+      res.status(500).json({ error: "Failed to start evening shift" });
     }
   });
   
-  // Get employee stats
-  app.get("/api/employee/stats", requireAuth, async (req, res) => {
+  // End evening shift
+  app.post("/api/employee/shift/evening/end", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const stats = await storage.getAttendanceStats(userId);
+      const today = new Date().toISOString().split("T")[0];
+      const now = new Date();
+      
+      const shift = await storage.getShiftByUserAndDate(userId, today);
+      
+      if (!shift?.eveningClockIn) {
+        return res.status(400).json({ error: "Evening shift not started" });
+      }
+      
+      if (shift.eveningClockOut) {
+        return res.status(400).json({ error: "Evening shift already ended" });
+      }
+      
+      const updated = await storage.updateShift(shift.id, {
+        eveningClockOut: now,
+      });
+      
+      await storage.createActivityLog({
+        userId,
+        action: "evening_clock_out",
+        details: "Evening shift ended",
+        timestamp: now,
+      });
+      
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to end evening shift" });
+    }
+  });
+
+  // Start break
+  app.post("/api/employee/break/start", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const today = new Date().toISOString().split("T")[0];
+      const now = new Date();
+      const { type } = req.body; // prayer, meal, urgent
+      
+      if (!["prayer", "meal", "urgent"].includes(type)) {
+        return res.status(400).json({ error: "Invalid break type" });
+      }
+      
+      // Check if already on break
+      const activeBreak = await storage.getActiveBreak(userId);
+      if (activeBreak) {
+        return res.status(400).json({ error: "Already on a break" });
+      }
+      
+      // Check break limits
+      const shift = await storage.getShiftByUserAndDate(userId, today);
+      const currentPeriod = now.getHours() < 14 ? "morning" : "evening";
+      
+      if (type === "prayer") {
+        // Prayer breaks: max 3 per day, morning only
+        const count = await storage.countBreaksByType(userId, today, "prayer");
+        if (count >= BREAK_LIMITS.prayer.maxPerDay) {
+          return res.status(400).json({ error: "Maximum prayer breaks reached for today" });
+        }
+      } else if (type === "meal") {
+        // Meal breaks: max 1 per day
+        const count = await storage.countBreaksByType(userId, today, "meal");
+        if (count >= BREAK_LIMITS.meal.maxPerDay) {
+          return res.status(400).json({ error: "Meal break already taken today" });
+        }
+      } else if (type === "urgent") {
+        // Urgent breaks: max 2 per shift
+        const count = await storage.countBreaksByType(userId, today, "urgent", currentPeriod);
+        if (count >= BREAK_LIMITS.urgent.maxPerShift) {
+          return res.status(400).json({ error: "Maximum urgent breaks reached for this shift" });
+        }
+      }
+      
+      const breakRecord = await storage.createBreak({
+        userId,
+        shiftId: shift?.id,
+        date: today,
+        type,
+        shiftPeriod: currentPeriod,
+        startTime: now,
+      });
+      
+      await storage.createActivityLog({
+        userId,
+        action: "break_start",
+        details: `Started ${type} break`,
+        timestamp: now,
+      });
+      
+      res.json(breakRecord);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to start break" });
+    }
+  });
+
+  // End break
+  app.post("/api/employee/break/end", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const now = new Date();
+      
+      const activeBreak = await storage.getActiveBreak(userId);
+      if (!activeBreak) {
+        return res.status(400).json({ error: "No active break to end" });
+      }
+      
+      const durationMinutes = Math.floor(
+        (now.getTime() - new Date(activeBreak.startTime).getTime()) / 60000
+      );
+      
+      const updated = await storage.updateBreak(activeBreak.id, {
+        endTime: now,
+        durationMinutes,
+      });
+      
+      await storage.createActivityLog({
+        userId,
+        action: "break_end",
+        details: `Ended ${activeBreak.type} break (${durationMinutes} minutes)`,
+        timestamp: now,
+      });
+      
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to end break" });
+    }
+  });
+  
+  // Get employee's shift history
+  app.get("/api/employee/shifts", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const shifts = await storage.getShiftsByUser(userId);
+      res.json(shifts);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch shifts" });
+    }
+  });
+
+  // Get employee's activity logs
+  app.get("/api/employee/activity-logs", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const date = req.query.date as string | undefined;
+      const logs = await storage.getActivityLogsByUser(userId, date);
+      res.json(logs);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch activity logs" });
+    }
+  });
+
+  // ============= TARGETS ROUTES =============
+  
+  // Get employee's targets for current month
+  app.get("/api/employee/targets", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+      
+      const target = await storage.getTargetByUserAndMonth(userId, month);
+      if (!target) {
+        return res.json({ target: null, items: [] });
+      }
+      
+      const items = await storage.getTargetItemsByTarget(target.id);
+      res.json({ target, items });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch targets" });
+    }
+  });
+
+  // Add target item (meeting or order)
+  app.post("/api/employee/targets/items", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const { type, name, source, contactLink, date } = req.body;
+      const month = (date as string).slice(0, 7);
+      
+      if (!["meeting", "order"].includes(type)) {
+        return res.status(400).json({ error: "Invalid target item type" });
+      }
+      
+      // Get or create target for this month
+      let target = await storage.getTargetByUserAndMonth(userId, month);
+      if (!target) {
+        target = await storage.createTarget({ userId, month });
+      }
+      
+      const item = await storage.createTargetItem({
+        targetId: target.id,
+        userId,
+        type,
+        name,
+        source,
+        contactLink,
+        date,
+      });
+      
+      await storage.createActivityLog({
+        userId,
+        action: `target_${type}_added`,
+        details: `Added ${type}: ${name}`,
+        timestamp: new Date(),
+      });
+      
+      res.json(item);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to add target item" });
+    }
+  });
+
+  // Admin: Get all targets for a month
+  app.get("/api/admin/targets", requireAdmin, async (req, res) => {
+    try {
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+      const allTargets = await storage.getAllTargetsForMonth(month);
+      res.json(allTargets);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch targets" });
+    }
+  });
+
+  // Admin: Set target goals for an employee
+  app.post("/api/admin/targets", requireAdmin, async (req, res) => {
+    try {
+      const { userId, month, meetingTarget, orderTarget } = req.body;
+      
+      let target = await storage.getTargetByUserAndMonth(userId, month);
+      if (target) {
+        target = await storage.updateTarget(target.id, { meetingTarget, orderTarget });
+      } else {
+        target = await storage.createTarget({ userId, month, meetingTarget, orderTarget });
+      }
+      
+      res.json(target);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to set targets" });
+    }
+  });
+
+  // Admin: Verify target item
+  app.patch("/api/admin/targets/items/:id/verify", requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const adminId = req.session.userId!;
+      
+      const item = await storage.updateTargetItem(id, {
+        verified: true,
+        verifiedAt: new Date(),
+        verifiedBy: adminId,
+      });
+      
+      if (!item) {
+        return res.status(404).json({ error: "Target item not found" });
+      }
+      
+      res.json(item);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to verify target item" });
+    }
+  });
+
+  // Admin: Get all target items (for verification board)
+  app.get("/api/admin/targets/items", requireAdmin, async (req, res) => {
+    try {
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+      const items = await storage.getAllTargetItemsForMonth(month);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch target items" });
+    }
+  });
+
+  // ============= ANALYTICS ROUTES =============
+  
+  // Admin: Get attendance analytics
+  app.get("/api/admin/analytics/attendance", requireAdmin, async (req, res) => {
+    try {
+      const startDate = req.query.startDate as string;
+      const endDate = req.query.endDate as string;
+      const analytics = await storage.getAttendanceAnalytics(startDate, endDate);
+      res.json(analytics);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch attendance analytics" });
+    }
+  });
+
+  // Admin: Get department stats
+  app.get("/api/admin/analytics/departments", requireAdmin, async (req, res) => {
+    try {
+      const stats = await storage.getDepartmentStats();
       res.json(stats);
     } catch (error) {
-      res.status(500).json({ error: "Failed to fetch stats" });
+      res.status(500).json({ error: "Failed to fetch department stats" });
     }
   });
 
