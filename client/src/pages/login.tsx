@@ -8,10 +8,9 @@ import { loginSchema, type LoginData } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Form,
   FormControl,
@@ -21,6 +20,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { ThemeToggle } from "@/components/theme-toggle";
+import companyLogo from "@assets/WhatsApp_Image_2025-08-19_at_14.24.16_1766314150496.jpeg";
 
 export default function LoginPage() {
   const [selectedRole, setSelectedRole] = useState<"employee" | "admin">("employee");
@@ -73,11 +73,13 @@ export default function LoginPage() {
         <div className="w-full max-w-md space-y-6">
           <div className="flex flex-col items-center space-y-4">
             <div className="flex items-center gap-3">
-              <div className="h-12 w-12 rounded-md bg-primary flex items-center justify-center">
-                <Shield className="h-7 w-7 text-primary-foreground" />
-              </div>
+              <img 
+                src={companyLogo} 
+                alt="Company Logo" 
+                className="h-14 w-14 rounded-md object-contain"
+              />
               <div>
-                <h1 className="text-2xl font-bold" data-testid="text-brand">GetAI Chatbots</h1>
+                <h1 className="text-2xl font-bold" data-testid="text-brand">GAC Trackings</h1>
               </div>
             </div>
             <div className="text-center">

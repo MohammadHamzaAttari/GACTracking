@@ -24,7 +24,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
-import { Shield } from "lucide-react";
+import companyLogo from "@assets/WhatsApp_Image_2025-08-19_at_14.24.16_1766314150496.jpeg";
 
 const adminMenuItems = [
   { title: "Dashboard", url: "/admin", icon: LayoutDashboard },
@@ -60,11 +60,13 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="p-4 border-b border-sidebar-border">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-md bg-primary flex items-center justify-center">
-            <Shield className="h-6 w-6 text-primary-foreground" />
-          </div>
+          <img 
+            src={companyLogo} 
+            alt="Company Logo" 
+            className="h-10 w-10 rounded-md object-contain"
+          />
           <div>
-            <h1 className="font-bold text-sm" data-testid="text-sidebar-brand">GetAI Chatbots</h1>
+            <h1 className="font-bold text-sm" data-testid="text-sidebar-brand">GAC Trackings</h1>
             <p className="text-xs text-muted-foreground">Attendance System</p>
           </div>
         </div>
