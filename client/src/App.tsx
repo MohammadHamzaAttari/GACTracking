@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from "@/lib/auth";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { Preloader, PageLoader } from "@/components/preloader";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
 import AdminDashboard from "@/pages/admin/dashboard";
@@ -18,7 +19,7 @@ import SettingsPage from "@/pages/admin/settings";
 import EmployeeDashboard from "@/pages/employee/dashboard";
 import EmployeeAttendancePage from "@/pages/employee/attendance";
 import EmployeeCalendarPage from "@/pages/employee/calendar";
-import { Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
 
 function ProtectedRoute({
   children,
@@ -31,11 +32,7 @@ function ProtectedRoute({
   const [, navigate] = useLocation();
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   if (!user) {
@@ -76,11 +73,7 @@ function AppRoutes() {
   const [location] = useLocation();
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   // Redirect logged in users away from login page
@@ -158,11 +151,19 @@ function AppRoutes() {
 }
 
 function App() {
+  const [showPreloader, setShowPreloader] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setShowPreloader(false), 1800);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <TooltipProvider>
+            {showPreloader && <Preloader isLoading={showPreloader} />}
             <Toaster />
             <AppRoutes />
           </TooltipProvider>
