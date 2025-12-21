@@ -43,20 +43,24 @@ function StatCard({
   icon: Icon,
   description,
   trend,
+  gradientClass,
 }: {
   title: string;
   value: string | number;
   icon: React.ElementType;
   description?: string;
   trend?: "up" | "down" | "neutral";
+  gradientClass?: string;
 }) {
   return (
-    <Card>
+    <Card className="card-gradient animate-fade-in">
       <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
           {title}
         </CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
+        <div className={`p-2 rounded-md ${gradientClass || "gradient-primary"}`}>
+          <Icon className="h-4 w-4 text-white" />
+        </div>
       </CardHeader>
       <CardContent>
         <div className="text-2xl font-bold" data-testid={`stat-${title.toLowerCase().replace(" ", "-")}`}>
@@ -128,12 +132,14 @@ export default function AdminDashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between animate-fade-in">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Admin Dashboard</h1>
+          <h1 className="text-2xl font-bold" data-testid="text-page-title">
+            <span className="gradient-text">Admin Dashboard</span>
+          </h1>
           <p className="text-muted-foreground text-sm">{today}</p>
         </div>
-        <Badge variant="secondary" className="w-fit flex items-center gap-1">
+        <Badge className="w-fit flex items-center gap-1 gradient-primary text-white border-0">
           <Calendar className="h-3 w-3" />
           Today's Overview
         </Badge>
@@ -160,6 +166,7 @@ export default function AdminDashboard() {
               value={stats?.totalEmployees || 0}
               icon={Users}
               description="Active team members"
+              gradientClass="gradient-primary"
             />
             <StatCard
               title="Present Today"
@@ -167,12 +174,14 @@ export default function AdminDashboard() {
               icon={UserCheck}
               description="On time arrivals"
               trend="up"
+              gradientClass="gradient-success"
             />
             <StatCard
               title="Absent Today"
               value={stats?.absentToday || 0}
               icon={UserX}
               description="Not checked in"
+              gradientClass="bg-gradient-to-r from-red-500 to-orange-500"
             />
             <StatCard
               title="Attendance Rate"
@@ -180,18 +189,21 @@ export default function AdminDashboard() {
               icon={TrendingUp}
               description="This month"
               trend="up"
+              gradientClass="gradient-accent"
             />
           </>
         )}
       </div>
 
-      <Card>
+      <Card className="card-gradient animate-slide-up">
         <CardHeader className="flex flex-row items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2">
-            <Clock className="h-5 w-5" />
+            <div className="p-1.5 rounded-md gradient-primary">
+              <Clock className="h-4 w-4 text-white" />
+            </div>
             Staff Activity Monitor
           </CardTitle>
-          <Badge variant="outline" className="text-xs">
+          <Badge className="text-xs gradient-primary text-white border-0 animate-pulse">
             Live Status
           </Badge>
         </CardHeader>

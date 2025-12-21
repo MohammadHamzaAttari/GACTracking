@@ -62,20 +62,22 @@ function StatCard({
   title,
   value,
   icon: Icon,
-  color,
+  gradientClass,
 }: {
   title: string;
   value: string | number;
   icon: React.ElementType;
-  color?: string;
+  gradientClass?: string;
 }) {
   return (
-    <Card>
+    <Card className="card-gradient animate-fade-in">
       <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
         <CardTitle className="text-sm font-medium text-muted-foreground">
           {title}
         </CardTitle>
-        <Icon className={`h-4 w-4 ${color || "text-muted-foreground"}`} />
+        <div className={`p-2 rounded-md ${gradientClass || "gradient-primary"}`}>
+          <Icon className="h-4 w-4 text-white" />
+        </div>
       </CardHeader>
       <CardContent>
         <div className="text-2xl font-bold" data-testid={`stat-${title.toLowerCase().replace(" ", "-")}`}>
@@ -238,25 +240,27 @@ export default function EmployeeDashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between animate-fade-in">
         <div>
           <h1 className="text-2xl font-bold" data-testid="text-greeting">
-            Welcome, {userName}
+            Welcome, <span className="gradient-text">{userName}</span>
           </h1>
           <p className="text-muted-foreground text-sm">{today}</p>
         </div>
-        <Badge variant="secondary" className="w-fit text-lg font-mono py-1 px-3">
+        <Badge className="w-fit text-lg font-mono py-1 px-3 gradient-primary text-white border-0">
           <Clock className="h-4 w-4 mr-2" />
           {time}
         </Badge>
       </div>
 
-      <Card className="border-2">
+      <Card className="card-gradient animate-slide-up">
         <CardContent className="pt-6">
           <div className="grid gap-6 md:grid-cols-2">
             <div className="space-y-4">
               <div className="flex items-center gap-2">
-                <Sun className="h-5 w-5 text-yellow-500" />
+                <div className="p-1.5 rounded-md bg-gradient-to-r from-yellow-400 to-orange-500">
+                  <Sun className="h-4 w-4 text-white" />
+                </div>
                 <h3 className="font-semibold">Morning Shift</h3>
               </div>
               {statusLoading ? (
@@ -320,7 +324,9 @@ export default function EmployeeDashboard() {
 
             <div className="space-y-4">
               <div className="flex items-center gap-2">
-                <Moon className="h-5 w-5 text-blue-500" />
+                <div className="p-1.5 rounded-md bg-gradient-to-r from-indigo-500 to-purple-600">
+                  <Moon className="h-4 w-4 text-white" />
+                </div>
                 <h3 className="font-semibold">Evening Shift</h3>
               </div>
               {statusLoading ? (
@@ -385,10 +391,12 @@ export default function EmployeeDashboard() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="card-gradient">
         <CardHeader className="flex flex-row items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2">
-            <Coffee className="h-5 w-5" />
+            <div className="p-1.5 rounded-md gradient-accent">
+              <Coffee className="h-4 w-4 text-white" />
+            </div>
             Break Management
           </CardTitle>
         </CardHeader>
@@ -511,34 +519,36 @@ export default function EmployeeDashboard() {
               title="Present Days"
               value={stats?.presentDays || 0}
               icon={CheckCircle2}
-              color="text-green-500"
+              gradientClass="gradient-success"
             />
             <StatCard
               title="Absent Days"
               value={stats?.absentDays || 0}
               icon={XCircle}
-              color="text-red-500"
+              gradientClass="bg-gradient-to-r from-red-500 to-orange-500"
             />
             <StatCard
               title="Late Arrivals"
               value={stats?.lateDays || 0}
               icon={Clock}
-              color="text-yellow-500"
+              gradientClass="bg-gradient-to-r from-yellow-400 to-orange-500"
             />
             <StatCard
               title="Total Hours"
               value={`${stats?.totalWorkHours || 0}h`}
               icon={TrendingUp}
-              color="text-blue-500"
+              gradientClass="gradient-primary"
             />
           </>
         )}
       </div>
 
-      <Card>
+      <Card className="card-gradient">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Calendar className="h-5 w-5" />
+            <div className="p-1.5 rounded-md gradient-primary">
+              <Calendar className="h-4 w-4 text-white" />
+            </div>
             Quick Info
           </CardTitle>
         </CardHeader>

@@ -64,22 +64,29 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <header className="flex items-center justify-end p-4">
+    <div className="min-h-screen flex flex-col relative overflow-hidden">
+      <div className="absolute inset-0 gradient-primary opacity-10" />
+      <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-bl from-cyan-500/20 to-transparent rounded-full blur-3xl" />
+      <div className="absolute bottom-0 left-0 w-96 h-96 bg-gradient-to-tr from-teal-500/20 to-transparent rounded-full blur-3xl" />
+      
+      <header className="relative z-10 flex items-center justify-end p-4">
         <ThemeToggle />
       </header>
       
-      <div className="flex-1 flex items-center justify-center px-4">
-        <div className="w-full max-w-md space-y-6">
+      <div className="relative z-10 flex-1 flex items-center justify-center px-4">
+        <div className="w-full max-w-md space-y-6 animate-fade-in">
           <div className="flex flex-col items-center space-y-4">
             <div className="flex items-center gap-3">
-              <img 
-                src={companyLogo} 
-                alt="Company Logo" 
-                className="h-14 w-14 rounded-md object-contain"
-              />
+              <div className="relative">
+                <div className="absolute inset-0 gradient-primary rounded-lg blur-sm opacity-50" />
+                <img 
+                  src={companyLogo} 
+                  alt="Company Logo" 
+                  className="relative h-14 w-14 rounded-lg object-contain bg-white dark:bg-gray-900 p-1"
+                />
+              </div>
               <div>
-                <h1 className="text-2xl font-bold" data-testid="text-brand">GAC Trackings</h1>
+                <h1 className="text-2xl font-bold gradient-text" data-testid="text-brand">GAC Trackings</h1>
               </div>
             </div>
             <div className="text-center">
@@ -88,18 +95,18 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <Card>
+          <Card className="card-gradient backdrop-blur-sm bg-card/95">
             <CardHeader className="pb-4">
-              <div className="flex rounded-md border overflow-hidden">
+              <div className="flex rounded-md overflow-hidden border border-border">
                 <button
                   type="button"
                   onClick={() => {
                     setSelectedRole("employee");
                     form.setValue("role", "employee");
                   }}
-                  className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 text-sm font-medium transition-colors ${
+                  className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 text-sm font-medium transition-all ${
                     selectedRole === "employee"
-                      ? "bg-primary text-primary-foreground"
+                      ? "gradient-primary text-white shadow-lg"
                       : "bg-muted/50 text-muted-foreground hover-elevate"
                   }`}
                   data-testid="button-role-employee"
@@ -113,9 +120,9 @@ export default function LoginPage() {
                     setSelectedRole("admin");
                     form.setValue("role", "admin");
                   }}
-                  className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 text-sm font-medium transition-colors ${
+                  className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 text-sm font-medium transition-all ${
                     selectedRole === "admin"
-                      ? "bg-primary text-primary-foreground"
+                      ? "gradient-primary text-white shadow-lg"
                       : "bg-muted/50 text-muted-foreground hover-elevate"
                   }`}
                   data-testid="button-role-admin"
@@ -167,7 +174,7 @@ export default function LoginPage() {
 
                   <Button
                     type="submit"
-                    className="w-full"
+                    className="w-full gradient-primary border-0 shadow-lg transition-all"
                     disabled={loginMutation.isPending}
                     data-testid="button-login"
                   >
