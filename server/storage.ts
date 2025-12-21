@@ -27,7 +27,7 @@ import {
   BREAK_LIMITS
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, sql, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // User methods
@@ -46,7 +46,7 @@ export interface IStorage {
   createShift(shift: InsertShift): Promise<Shift>;
   updateShift(id: string, data: Partial<InsertShift>): Promise<Shift | undefined>;
   getShiftsByUser(userId: string): Promise<Shift[]>;
-  getTodayShifts(): Promise<(Shift & { user: SafeUser })[]>;
+  getTodayShifts(): Promise<(Shift & { user: SafeUser; breaks: Break[] })[]>;
   
   // Break methods
   getBreakById(id: string): Promise<Break | undefined>;
@@ -239,7 +239,7 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(shifts.date));
   }
 
-  async getTodayShifts(): Promise<(Shift & { user: SafeUser })[]> {
+  async getTodayShifts(): Promise<(Shift & { user: SafeUser; breaks: Break[] })[]> {
     const today = new Date().toISOString().split("T")[0];
     const records = await db
       .select({
@@ -281,7 +281,19 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(users, eq(shifts.userId, users.id))
       .where(eq(shifts.date, today));
     
-    return records as (Shift & { user: SafeUser })[];
+    // Fetch breaks for all shifts
+    const shiftIds = records.map(r => r.id);
+    const allBreaks = shiftIds.length > 0 
+      ? await db.select().from(breaks).where(inArray(breaks.shiftId, shiftIds))
+      : [];
+    
+    // Merge breaks into shifts
+    const shiftsWithBreaks = records.map(shift => ({
+      ...shift,
+      breaks: allBreaks.filter(b => b.shiftId === shift.id),
+    }));
+    
+    return shiftsWithBreaks as (Shift & { user: SafeUser; breaks: Break[] })[];
   }
 
   // Break methods

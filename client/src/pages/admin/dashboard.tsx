@@ -6,6 +6,9 @@ import {
   UserX,
   TrendingUp,
   Calendar,
+  Sun,
+  Moon,
+  Coffee,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import type { Attendance, SafeUser } from "@shared/schema";
+import type { Shift, SafeUser, Break } from "@shared/schema";
 
 interface DashboardStats {
   totalEmployees: number;
@@ -29,8 +32,9 @@ interface DashboardStats {
   attendanceRate: number;
 }
 
-interface RecentAttendance extends Attendance {
+interface TodayShift extends Shift {
   user: SafeUser;
+  breaks?: Break[];
 }
 
 function StatCard({
@@ -69,13 +73,8 @@ function StatCard({
   );
 }
 
-function getInitials(name: string) {
-  return name
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
+function getInitials(firstName: string, lastName: string) {
+  return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase() || "U";
 }
 
 function getStatusColor(status: string) {
@@ -86,11 +85,29 @@ function getStatusColor(status: string) {
       return "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400";
     case "absent":
       return "bg-red-500/10 text-red-600 dark:text-red-400";
-    case "half-day":
+    case "half_day":
       return "bg-orange-500/10 text-orange-600 dark:text-orange-400";
+    case "not_started":
+      return "bg-gray-500/10 text-gray-600 dark:text-gray-400";
     default:
       return "";
   }
+}
+
+function getCurrentShiftStatus(shift: TodayShift) {
+  if (shift.eveningClockIn && !shift.eveningClockOut) {
+    return "evening_active";
+  }
+  if (shift.morningClockIn && !shift.morningClockOut) {
+    return "morning_active";
+  }
+  if (shift.eveningClockOut) {
+    return "evening_complete";
+  }
+  if (shift.morningClockOut) {
+    return "morning_complete";
+  }
+  return "not_started";
 }
 
 export default function AdminDashboard() {
@@ -98,10 +115,8 @@ export default function AdminDashboard() {
     queryKey: ["/api/admin/stats"],
   });
 
-  const { data: recentAttendance, isLoading: attendanceLoading } = useQuery<
-    RecentAttendance[]
-  >({
-    queryKey: ["/api/admin/attendance/recent"],
+  const { data: todayShifts, isLoading: shiftsLoading } = useQuery<TodayShift[]>({
+    queryKey: ["/api/admin/shifts/today"],
   });
 
   const today = new Date().toLocaleDateString("en-US", {
@@ -174,11 +189,14 @@ export default function AdminDashboard() {
         <CardHeader className="flex flex-row items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2">
             <Clock className="h-5 w-5" />
-            Recent Activity
+            Staff Activity Monitor
           </CardTitle>
+          <Badge variant="outline" className="text-xs">
+            Live Status
+          </Badge>
         </CardHeader>
         <CardContent>
-          {attendanceLoading ? (
+          {shiftsLoading ? (
             <div className="space-y-3">
               {[...Array(5)].map((_, i) => (
                 <div key={i} className="flex items-center gap-4">
@@ -190,63 +208,107 @@ export default function AdminDashboard() {
                 </div>
               ))}
             </div>
-          ) : recentAttendance && recentAttendance.length > 0 ? (
+          ) : todayShifts && todayShifts.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Employee</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Clock In</TableHead>
-                  <TableHead>Clock Out</TableHead>
+                  <TableHead>Morning Shift</TableHead>
+                  <TableHead>Evening Shift</TableHead>
+                  <TableHead>Breaks</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {recentAttendance.map((record) => (
-                  <TableRow key={record.id} data-testid={`row-attendance-${record.id}`}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-8 w-8">
-                          <AvatarFallback className="text-xs bg-primary/10 text-primary">
-                            {getInitials(record.user?.fullName || "U")}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <p className="font-medium text-sm">{record.user?.fullName}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {record.user?.department || "No department"}
-                          </p>
+                {todayShifts.map((shift) => {
+                  const shiftStatus = getCurrentShiftStatus(shift);
+                  const fullName = `${shift.user?.firstName || ""} ${shift.user?.lastName || ""}`.trim();
+                  return (
+                    <TableRow key={shift.id} data-testid={`row-shift-${shift.id}`}>
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-8 w-8">
+                            <AvatarFallback className="text-xs bg-primary/10 text-primary">
+                              {getInitials(shift.user?.firstName || "", shift.user?.lastName || "")}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <p className="font-medium text-sm">{fullName || "Unknown"}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {shift.user?.department || "No department"}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge className={getStatusColor(record.status)} variant="secondary">
-                        {record.status.charAt(0).toUpperCase() + record.status.slice(1)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {record.clockIn
-                        ? new Date(record.clockIn).toLocaleTimeString("en-US", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "-"}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {record.clockOut
-                        ? new Date(record.clockOut).toLocaleTimeString("en-US", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "-"}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={getStatusColor(shift.status)} variant="secondary">
+                          {shift.status === "not_started" ? "Not Started" : 
+                           shift.status.charAt(0).toUpperCase() + shift.status.slice(1).replace("_", " ")}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        <div className="flex items-center gap-2">
+                          <Sun className="h-3 w-3 text-yellow-500" />
+                          <div>
+                            {shift.morningClockIn
+                              ? new Date(shift.morningClockIn).toLocaleTimeString("en-US", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "-"}
+                            {shift.morningClockIn && (
+                              <span className="text-muted-foreground mx-1">to</span>
+                            )}
+                            {shift.morningClockOut
+                              ? new Date(shift.morningClockOut).toLocaleTimeString("en-US", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : shift.morningClockIn && shiftStatus === "morning_active" 
+                                ? <Badge variant="outline" className="text-xs ml-1 text-green-600">Active</Badge>
+                                : ""}
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        <div className="flex items-center gap-2">
+                          <Moon className="h-3 w-3 text-blue-500" />
+                          <div>
+                            {shift.eveningClockIn
+                              ? new Date(shift.eveningClockIn).toLocaleTimeString("en-US", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "-"}
+                            {shift.eveningClockIn && (
+                              <span className="text-muted-foreground mx-1">to</span>
+                            )}
+                            {shift.eveningClockOut
+                              ? new Date(shift.eveningClockOut).toLocaleTimeString("en-US", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : shift.eveningClockIn && shiftStatus === "evening_active"
+                                ? <Badge variant="outline" className="text-xs ml-1 text-green-600">Active</Badge>
+                                : ""}
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          <Coffee className="h-3 w-3 text-muted-foreground" />
+                          <span className="text-sm">{shift.breaks?.length || 0}</span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           ) : (
             <div className="text-center py-8">
               <Clock className="h-12 w-12 mx-auto text-muted-foreground/50" />
-              <p className="mt-2 text-muted-foreground">No attendance records yet</p>
+              <p className="mt-2 text-muted-foreground">No attendance records yet today</p>
             </div>
           )}
         </CardContent>

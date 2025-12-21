@@ -1,9 +1,43 @@
-import { Settings, Clock, Bell, Shield, Building } from "lucide-react";
+import { useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import {
+  Settings,
+  Clock,
+  Bell,
+  Shield,
+  Building,
+  MessageSquare,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Send,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+  FormDescription,
+} from "@/components/ui/form";
 import {
   Select,
   SelectContent,
@@ -11,8 +45,85 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import type { WasenderConfig } from "@shared/schema";
+
+const wasenderFormSchema = z.object({
+  instanceId: z.string().min(1, "Instance ID is required"),
+  apiToken: z.string().min(1, "API Token is required"),
+  isActive: z.boolean().default(false),
+});
+
+type WasenderFormData = z.infer<typeof wasenderFormSchema>;
 
 export default function SettingsPage() {
+  const [wasenderDialogOpen, setWasenderDialogOpen] = useState(false);
+  const { toast } = useToast();
+
+  const { data: wasenderConfig, isLoading: configLoading } = useQuery<WasenderConfig>({
+    queryKey: ["/api/admin/wasender-config"],
+  });
+
+  const wasenderForm = useForm<WasenderFormData>({
+    resolver: zodResolver(wasenderFormSchema),
+    defaultValues: {
+      instanceId: wasenderConfig?.instanceId || "",
+      apiToken: "",
+      isActive: wasenderConfig?.isActive || false,
+    },
+  });
+
+  const updateWasenderMutation = useMutation({
+    mutationFn: async (data: WasenderFormData) => {
+      const res = await apiRequest("POST", "/api/admin/wasender-config", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/wasender-config"] });
+      setWasenderDialogOpen(false);
+      toast({ title: "WASENDER configuration updated" });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to update configuration",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const testWasenderMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/admin/wasender-test");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/wasender-config"] });
+      toast({ title: "Connection test successful!" });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Connection test failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const onWasenderSubmit = (data: WasenderFormData) => {
+    updateWasenderMutation.mutate(data);
+  };
+
+  const handleOpenWasenderDialog = () => {
+    wasenderForm.reset({
+      instanceId: wasenderConfig?.instanceId || "",
+      apiToken: "",
+      isActive: wasenderConfig?.isActive || false,
+    });
+    setWasenderDialogOpen(true);
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -23,6 +134,176 @@ export default function SettingsPage() {
       </div>
 
       <div className="grid gap-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <MessageSquare className="h-5 w-5" />
+              WASENDER WhatsApp Integration
+            </CardTitle>
+            <CardDescription>
+              Configure WhatsApp notifications for shift and break updates
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {configLoading ? (
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading configuration...
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between rounded-lg border p-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Label>Connection Status</Label>
+                      {wasenderConfig?.isActive ? (
+                        <Badge variant="secondary" className="bg-green-500/10 text-green-600 dark:text-green-400">
+                          <CheckCircle2 className="h-3 w-3 mr-1" />
+                          Connected
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="bg-yellow-500/10 text-yellow-600 dark:text-yellow-400">
+                          <XCircle className="h-3 w-3 mr-1" />
+                          Not Configured
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      {wasenderConfig?.instanceId 
+                        ? `Instance: ${wasenderConfig.instanceId}`
+                        : "No instance configured"
+                      }
+                    </p>
+                    {wasenderConfig?.lastTested && (
+                      <p className="text-xs text-muted-foreground">
+                        Last tested: {new Date(wasenderConfig.lastTested).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    {wasenderConfig?.instanceId && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => testWasenderMutation.mutate()}
+                        disabled={testWasenderMutation.isPending}
+                        data-testid="button-test-wasender"
+                      >
+                        {testWasenderMutation.isPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        ) : (
+                          <Send className="h-4 w-4 mr-2" />
+                        )}
+                        Test
+                      </Button>
+                    )}
+                    <Dialog open={wasenderDialogOpen} onOpenChange={setWasenderDialogOpen}>
+                      <DialogTrigger asChild>
+                        <Button
+                          size="sm"
+                          onClick={handleOpenWasenderDialog}
+                          data-testid="button-configure-wasender"
+                        >
+                          <Settings className="h-4 w-4 mr-2" />
+                          Configure
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle className="flex items-center gap-2">
+                            <MessageSquare className="h-5 w-5" />
+                            WASENDER Configuration
+                          </DialogTitle>
+                          <DialogDescription>
+                            Enter your WASENDER API credentials to enable WhatsApp notifications
+                          </DialogDescription>
+                        </DialogHeader>
+                        <Form {...wasenderForm}>
+                          <form onSubmit={wasenderForm.handleSubmit(onWasenderSubmit)} className="space-y-4">
+                            <FormField
+                              control={wasenderForm.control}
+                              name="instanceId"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>Instance ID</FormLabel>
+                                  <FormControl>
+                                    <Input placeholder="your-instance-id" {...field} data-testid="input-instance-id" />
+                                  </FormControl>
+                                  <FormDescription>
+                                    Your WASENDER instance identifier
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            <FormField
+                              control={wasenderForm.control}
+                              name="apiToken"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>API Token</FormLabel>
+                                  <FormControl>
+                                    <Input 
+                                      type="password" 
+                                      placeholder="Enter your API token" 
+                                      {...field} 
+                                      data-testid="input-api-token" 
+                                    />
+                                  </FormControl>
+                                  <FormDescription>
+                                    Your WASENDER API authentication token
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            <FormField
+                              control={wasenderForm.control}
+                              name="isActive"
+                              render={({ field }) => (
+                                <FormItem className="flex items-center justify-between rounded-lg border p-4">
+                                  <div className="space-y-0.5">
+                                    <FormLabel className="text-base">Enable Notifications</FormLabel>
+                                    <FormDescription>
+                                      Send WhatsApp notifications for shifts and breaks
+                                    </FormDescription>
+                                  </div>
+                                  <FormControl>
+                                    <Switch
+                                      checked={field.value}
+                                      onCheckedChange={field.onChange}
+                                      data-testid="switch-wasender-active"
+                                    />
+                                  </FormControl>
+                                </FormItem>
+                              )}
+                            />
+                            <div className="flex justify-end gap-2">
+                              <Button type="button" variant="outline" onClick={() => setWasenderDialogOpen(false)}>
+                                Cancel
+                              </Button>
+                              <Button
+                                type="submit"
+                                disabled={updateWasenderMutation.isPending}
+                                data-testid="button-save-wasender"
+                              >
+                                {updateWasenderMutation.isPending && (
+                                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                )}
+                                Save Configuration
+                              </Button>
+                            </div>
+                          </form>
+                        </Form>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -45,11 +326,12 @@ export default function SettingsPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="timezone">Timezone</Label>
-                <Select defaultValue="utc">
+                <Select defaultValue="pkt">
                   <SelectTrigger data-testid="select-timezone">
                     <SelectValue placeholder="Select timezone" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="pkt">Pakistan Time (PKT)</SelectItem>
                     <SelectItem value="utc">UTC</SelectItem>
                     <SelectItem value="est">Eastern Time (EST)</SelectItem>
                     <SelectItem value="pst">Pacific Time (PST)</SelectItem>
