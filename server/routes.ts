@@ -1,9 +1,12 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import session from "express-session";
+import bcrypt from "bcrypt";
 import { storage } from "./storage";
 import { insertUserSchema, loginSchema } from "@shared/schema";
 import { z } from "zod";
+
+const SALT_ROUNDS = 10;
 
 // Extend express-session types
 declare module "express-session" {
@@ -62,7 +65,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Invalid username or password" });
       }
       
-      if (user.password !== data.password) {
+      const isValidPassword = await bcrypt.compare(data.password, user.password);
+      if (!isValidPassword) {
         return res.status(401).json({ error: "Invalid username or password" });
       }
       
@@ -145,7 +149,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Username already exists" });
       }
       
-      const user = await storage.createUser(data);
+      const hashedPassword = await bcrypt.hash(data.password, SALT_ROUNDS);
+      const user = await storage.createUser({ ...data, password: hashedPassword });
       const { password, ...safeUser } = user;
       res.json(safeUser);
     } catch (error) {
@@ -162,9 +167,11 @@ export async function registerRoutes(
       const { id } = req.params;
       const data = req.body;
       
-      // Remove password if empty
-      if (data.password === "") {
+      // Remove password if empty, otherwise hash it
+      if (data.password === "" || !data.password) {
         delete data.password;
+      } else {
+        data.password = await bcrypt.hash(data.password, SALT_ROUNDS);
       }
       
       const user = await storage.updateUser(id, data);
