@@ -7,6 +7,10 @@ import {
   activityLogs,
   wasenderConfig,
   departments,
+  dailyShiftReports,
+  specialRequests,
+  requestComments,
+  monthlyArchive,
   type User, 
   type InsertUser,
   type Shift,
@@ -23,6 +27,14 @@ import {
   type InsertWasenderConfig,
   type Department,
   type InsertDepartment,
+  type DailyShiftReport,
+  type InsertDailyShiftReport,
+  type SpecialRequest,
+  type InsertSpecialRequest,
+  type RequestComment,
+  type InsertRequestComment,
+  type MonthlyArchive,
+  type InsertMonthlyArchive,
   type SafeUser,
   BREAK_LIMITS
 } from "@shared/schema";
@@ -83,6 +95,34 @@ export interface IStorage {
   // Department methods
   getDepartments(): Promise<Department[]>;
   updateDepartment(id: string, data: Partial<InsertDepartment>): Promise<Department | undefined>;
+
+  // Daily Shift Report methods
+  getDailyShiftReport(id: string): Promise<DailyShiftReport | undefined>;
+  createDailyShiftReport(report: InsertDailyShiftReport): Promise<DailyShiftReport>;
+  updateDailyShiftReport(id: string, data: Partial<InsertDailyShiftReport>): Promise<DailyShiftReport | undefined>;
+  getDailyShiftReportsByUser(userId: string, month?: string): Promise<DailyShiftReport[]>;
+  getDailyShiftReportsByMonth(month: string): Promise<(DailyShiftReport & { user: SafeUser })[]>;
+  getReportByShiftId(shiftId: string): Promise<DailyShiftReport | undefined>;
+
+  // Special Request methods
+  getSpecialRequest(id: string): Promise<SpecialRequest | undefined>;
+  createSpecialRequest(request: InsertSpecialRequest): Promise<SpecialRequest>;
+  updateSpecialRequest(id: string, data: Partial<InsertSpecialRequest>): Promise<SpecialRequest | undefined>;
+  getSpecialRequestsByUser(userId: string, month?: string): Promise<SpecialRequest[]>;
+  getSpecialRequestsByMonth(month: string): Promise<(SpecialRequest & { user: SafeUser })[]>;
+  getSpecialRequestsByStatus(status: string, month?: string): Promise<(SpecialRequest & { user: SafeUser })[]>;
+
+  // Request Comment methods
+  getRequestComments(requestId: string): Promise<(RequestComment & { user: SafeUser })[]>;
+  addRequestComment(comment: InsertRequestComment): Promise<RequestComment>;
+
+  // Archive methods
+  getMonthlyArchive(month: string): Promise<MonthlyArchive | undefined>;
+  archiveMonth(month: string): Promise<MonthlyArchive>;
+  getArchivedMonths(): Promise<MonthlyArchive[]>;
+  isMonthArchived(month: string): Promise<boolean>;
+  getArchivedReports(month: string): Promise<DailyShiftReport[]>;
+  getArchivedRequests(month: string): Promise<SpecialRequest[]>;
   
   // Dashboard stats
   getDashboardStats(): Promise<{
@@ -724,6 +764,347 @@ export class DatabaseStorage implements IStorage {
       count: stats.count,
       activeToday: stats.activeToday,
     }));
+  }
+
+  // Daily Shift Report methods
+  async getDailyShiftReport(id: string): Promise<DailyShiftReport | undefined> {
+    const [report] = await db
+      .select()
+      .from(dailyShiftReports)
+      .where(eq(dailyShiftReports.id, id));
+    return report || undefined;
+  }
+
+  async createDailyShiftReport(report: InsertDailyShiftReport): Promise<DailyShiftReport> {
+    const [created] = await db
+      .insert(dailyShiftReports)
+      .values(report)
+      .returning();
+    return created;
+  }
+
+  async updateDailyShiftReport(id: string, data: Partial<InsertDailyShiftReport>): Promise<DailyShiftReport | undefined> {
+    const [updated] = await db
+      .update(dailyShiftReports)
+      .set(data)
+      .where(eq(dailyShiftReports.id, id))
+      .returning();
+    return updated || undefined;
+  }
+
+  async getDailyShiftReportsByUser(userId: string, month?: string): Promise<DailyShiftReport[]> {
+    let conditions = [eq(dailyShiftReports.userId, userId)];
+    
+    if (month) {
+      conditions.push(eq(dailyShiftReports.month, month));
+    }
+    
+    return db
+      .select()
+      .from(dailyShiftReports)
+      .where(and(...conditions))
+      .orderBy(desc(dailyShiftReports.date));
+  }
+
+  async getDailyShiftReportsByMonth(month: string): Promise<(DailyShiftReport & { user: SafeUser })[]> {
+    const reports = await db
+      .select({
+        id: dailyShiftReports.id,
+        userId: dailyShiftReports.userId,
+        shiftId: dailyShiftReports.shiftId,
+        date: dailyShiftReports.date,
+        workDetails: dailyShiftReports.workDetails,
+        loomVideos: dailyShiftReports.loomVideos,
+        notes: dailyShiftReports.notes,
+        references: dailyShiftReports.references,
+        month: dailyShiftReports.month,
+        archived: dailyShiftReports.archived,
+        createdAt: dailyShiftReports.createdAt,
+        updatedAt: dailyShiftReports.updatedAt,
+        user: {
+          id: users.id,
+          username: users.username,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          role: users.role,
+          department: users.department,
+          position: users.position,
+          salary: users.salary,
+          status: users.status,
+          shiftType: users.shiftType,
+          shiftStartTime: users.shiftStartTime,
+          shiftEndTime: users.shiftEndTime,
+          phone: users.phone,
+          whatsappPreference: users.whatsappPreference,
+          address: users.address,
+          emergencyContact: users.emergencyContact,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        },
+      })
+      .from(dailyShiftReports)
+      .innerJoin(users, eq(dailyShiftReports.userId, users.id))
+      .where(eq(dailyShiftReports.month, month))
+      .orderBy(desc(dailyShiftReports.date));
+    
+    return reports as (DailyShiftReport & { user: SafeUser })[];
+  }
+
+  async getReportByShiftId(shiftId: string): Promise<DailyShiftReport | undefined> {
+    const [report] = await db
+      .select()
+      .from(dailyShiftReports)
+      .where(eq(dailyShiftReports.shiftId, shiftId));
+    return report || undefined;
+  }
+
+  // Special Request methods
+  async getSpecialRequest(id: string): Promise<SpecialRequest | undefined> {
+    const [request] = await db
+      .select()
+      .from(specialRequests)
+      .where(eq(specialRequests.id, id));
+    return request || undefined;
+  }
+
+  async createSpecialRequest(request: InsertSpecialRequest): Promise<SpecialRequest> {
+    const [created] = await db
+      .insert(specialRequests)
+      .values(request)
+      .returning();
+    return created;
+  }
+
+  async updateSpecialRequest(id: string, data: Partial<InsertSpecialRequest>): Promise<SpecialRequest | undefined> {
+    const [updated] = await db
+      .update(specialRequests)
+      .set(data)
+      .where(eq(specialRequests.id, id))
+      .returning();
+    return updated || undefined;
+  }
+
+  async getSpecialRequestsByUser(userId: string, month?: string): Promise<SpecialRequest[]> {
+    let conditions = [eq(specialRequests.userId, userId)];
+    
+    if (month) {
+      conditions.push(eq(specialRequests.month, month));
+    }
+    
+    return db
+      .select()
+      .from(specialRequests)
+      .where(and(...conditions))
+      .orderBy(desc(specialRequests.createdAt));
+  }
+
+  async getSpecialRequestsByMonth(month: string): Promise<(SpecialRequest & { user: SafeUser })[]> {
+    const requests = await db
+      .select({
+        id: specialRequests.id,
+        userId: specialRequests.userId,
+        title: specialRequests.title,
+        details: specialRequests.details,
+        status: specialRequests.status,
+        month: specialRequests.month,
+        archived: specialRequests.archived,
+        createdAt: specialRequests.createdAt,
+        updatedAt: specialRequests.updatedAt,
+        user: {
+          id: users.id,
+          username: users.username,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          role: users.role,
+          department: users.department,
+          position: users.position,
+          salary: users.salary,
+          status: users.status,
+          shiftType: users.shiftType,
+          shiftStartTime: users.shiftStartTime,
+          shiftEndTime: users.shiftEndTime,
+          phone: users.phone,
+          whatsappPreference: users.whatsappPreference,
+          address: users.address,
+          emergencyContact: users.emergencyContact,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        },
+      })
+      .from(specialRequests)
+      .innerJoin(users, eq(specialRequests.userId, users.id))
+      .where(eq(specialRequests.month, month))
+      .orderBy(desc(specialRequests.createdAt));
+    
+    return requests as (SpecialRequest & { user: SafeUser })[];
+  }
+
+  async getSpecialRequestsByStatus(status: string, month?: string): Promise<(SpecialRequest & { user: SafeUser })[]> {
+    let conditions = [eq(specialRequests.status, status)];
+    
+    if (month) {
+      conditions.push(eq(specialRequests.month, month));
+    }
+    
+    const requests = await db
+      .select({
+        id: specialRequests.id,
+        userId: specialRequests.userId,
+        title: specialRequests.title,
+        details: specialRequests.details,
+        status: specialRequests.status,
+        month: specialRequests.month,
+        archived: specialRequests.archived,
+        createdAt: specialRequests.createdAt,
+        updatedAt: specialRequests.updatedAt,
+        user: {
+          id: users.id,
+          username: users.username,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          role: users.role,
+          department: users.department,
+          position: users.position,
+          salary: users.salary,
+          status: users.status,
+          shiftType: users.shiftType,
+          shiftStartTime: users.shiftStartTime,
+          shiftEndTime: users.shiftEndTime,
+          phone: users.phone,
+          whatsappPreference: users.whatsappPreference,
+          address: users.address,
+          emergencyContact: users.emergencyContact,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        },
+      })
+      .from(specialRequests)
+      .innerJoin(users, eq(specialRequests.userId, users.id))
+      .where(and(...conditions))
+      .orderBy(desc(specialRequests.createdAt));
+    
+    return requests as (SpecialRequest & { user: SafeUser })[];
+  }
+
+  // Request Comment methods
+  async getRequestComments(requestId: string): Promise<(RequestComment & { user: SafeUser })[]> {
+    const comments = await db
+      .select({
+        id: requestComments.id,
+        requestId: requestComments.requestId,
+        userId: requestComments.userId,
+        comment: requestComments.comment,
+        isAdminComment: requestComments.isAdminComment,
+        statusChange: requestComments.statusChange,
+        createdAt: requestComments.createdAt,
+        user: {
+          id: users.id,
+          username: users.username,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          role: users.role,
+          department: users.department,
+          position: users.position,
+          salary: users.salary,
+          status: users.status,
+          shiftType: users.shiftType,
+          shiftStartTime: users.shiftStartTime,
+          shiftEndTime: users.shiftEndTime,
+          phone: users.phone,
+          whatsappPreference: users.whatsappPreference,
+          address: users.address,
+          emergencyContact: users.emergencyContact,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        },
+      })
+      .from(requestComments)
+      .innerJoin(users, eq(requestComments.userId, users.id))
+      .where(eq(requestComments.requestId, requestId))
+      .orderBy(requestComments.createdAt);
+    
+    return comments as (RequestComment & { user: SafeUser })[];
+  }
+
+  async addRequestComment(comment: InsertRequestComment): Promise<RequestComment> {
+    const [created] = await db
+      .insert(requestComments)
+      .values(comment)
+      .returning();
+    return created;
+  }
+
+  // Archive methods
+  async getMonthlyArchive(month: string): Promise<MonthlyArchive | undefined> {
+    const [archive] = await db
+      .select()
+      .from(monthlyArchive)
+      .where(eq(monthlyArchive.month, month));
+    return archive || undefined;
+  }
+
+  async archiveMonth(month: string): Promise<MonthlyArchive> {
+    const reportCount = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(dailyShiftReports)
+      .where(eq(dailyShiftReports.month, month));
+    
+    const requestCount = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(specialRequests)
+      .where(eq(specialRequests.month, month));
+    
+    const [archive] = await db
+      .insert(monthlyArchive)
+      .values({
+        month,
+        totalReports: reportCount[0]?.count || 0,
+        totalRequests: requestCount[0]?.count || 0,
+      })
+      .returning();
+    
+    return archive;
+  }
+
+  async getArchivedMonths(): Promise<MonthlyArchive[]> {
+    return db
+      .select()
+      .from(monthlyArchive)
+      .orderBy(desc(monthlyArchive.month));
+  }
+
+  async isMonthArchived(month: string): Promise<boolean> {
+    const [archive] = await db
+      .select()
+      .from(monthlyArchive)
+      .where(eq(monthlyArchive.month, month));
+    return !!archive;
+  }
+
+  async getArchivedReports(month: string): Promise<DailyShiftReport[]> {
+    return db
+      .select()
+      .from(dailyShiftReports)
+      .where(and(
+        eq(dailyShiftReports.month, month),
+        eq(dailyShiftReports.archived, true)
+      ))
+      .orderBy(desc(dailyShiftReports.date));
+  }
+
+  async getArchivedRequests(month: string): Promise<SpecialRequest[]> {
+    return db
+      .select()
+      .from(specialRequests)
+      .where(and(
+        eq(specialRequests.month, month),
+        eq(specialRequests.archived, true)
+      ))
+      .orderBy(desc(specialRequests.createdAt));
   }
 }
 

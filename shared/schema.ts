@@ -115,6 +115,56 @@ export const wasenderConfig = pgTable("wasender_config", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Daily Shift Reports table
+export const dailyShiftReports = pgTable("daily_shift_reports", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  shiftId: varchar("shift_id").notNull().references(() => shifts.id),
+  date: date("date").notNull(),
+  workDetails: text("work_details").notNull(), // Main work description
+  loomVideos: text("loom_videos"), // JSON array of video links
+  notes: text("notes"), // Additional notes
+  references: text("references"), // JSON array of reference links
+  month: text("month").notNull(), // Format: 'YYYY-MM' for archiving
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Special Requests table
+export const specialRequests = pgTable("special_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  title: text("title").notNull(),
+  details: text("details").notNull(),
+  status: text("status").notNull().default("sent_for_approval"), // 'sent_for_approval', 'approved', 'not_approved', 'revision', 'resolved'
+  month: text("month").notNull(), // Format: 'YYYY-MM' for archiving
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Request Comments/Revisions table (conversation thread)
+export const requestComments = pgTable("request_comments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  requestId: varchar("request_id").notNull().references(() => specialRequests.id),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  comment: text("comment").notNull(),
+  isAdminComment: boolean("is_admin_comment").notNull().default(false),
+  statusChange: text("status_change"), // Status change if this comment changed the request status
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Monthly Archive table (tracks which months are archived)
+export const monthlyArchive = pgTable("monthly_archive", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  month: text("month").notNull().unique(), // Format: 'YYYY-MM'
+  archivedDate: timestamp("archived_date").defaultNow(),
+  totalReports: integer("total_reports").default(0),
+  totalRequests: integer("total_requests").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   shifts: many(shifts),
@@ -122,6 +172,9 @@ export const usersRelations = relations(users, ({ many }) => ({
   targets: many(targets),
   targetItems: many(targetItems),
   activityLogs: many(activityLogs),
+  dailyShiftReports: many(dailyShiftReports),
+  specialRequests: many(specialRequests),
+  requestComments: many(requestComments),
 }));
 
 export const shiftsRelations = relations(shifts, ({ one, many }) => ({
@@ -173,6 +226,36 @@ export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
   }),
 }));
 
+export const dailyShiftReportsRelations = relations(dailyShiftReports, ({ one }) => ({
+  user: one(users, {
+    fields: [dailyShiftReports.userId],
+    references: [users.id],
+  }),
+  shift: one(shifts, {
+    fields: [dailyShiftReports.shiftId],
+    references: [shifts.id],
+  }),
+}));
+
+export const specialRequestsRelations = relations(specialRequests, ({ one, many }) => ({
+  user: one(users, {
+    fields: [specialRequests.userId],
+    references: [users.id],
+  }),
+  comments: many(requestComments),
+}));
+
+export const requestCommentsRelations = relations(requestComments, ({ one }) => ({
+  request: one(specialRequests, {
+    fields: [requestComments.requestId],
+    references: [specialRequests.id],
+  }),
+  user: one(users, {
+    fields: [requestComments.userId],
+    references: [users.id],
+  }),
+}));
+
 // Insert schemas
 export const insertDepartmentSchema = createInsertSchema(departments).omit({
   id: true,
@@ -214,6 +297,28 @@ export const insertWasenderConfigSchema = createInsertSchema(wasenderConfig).omi
   createdAt: true,
 });
 
+export const insertDailyShiftReportSchema = createInsertSchema(dailyShiftReports).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertSpecialRequestSchema = createInsertSchema(specialRequests).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertRequestCommentSchema = createInsertSchema(requestComments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertMonthlyArchiveSchema = createInsertSchema(monthlyArchive).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Login schema
 export const loginSchema = z.object({
   username: z.string().min(1, "Username is required"),
@@ -246,6 +351,18 @@ export type ActivityLog = typeof activityLogs.$inferSelect;
 export type InsertWasenderConfig = z.infer<typeof insertWasenderConfigSchema>;
 export type WasenderConfig = typeof wasenderConfig.$inferSelect;
 
+export type InsertDailyShiftReport = z.infer<typeof insertDailyShiftReportSchema>;
+export type DailyShiftReport = typeof dailyShiftReports.$inferSelect;
+
+export type InsertSpecialRequest = z.infer<typeof insertSpecialRequestSchema>;
+export type SpecialRequest = typeof specialRequests.$inferSelect;
+
+export type InsertRequestComment = z.infer<typeof insertRequestCommentSchema>;
+export type RequestComment = typeof requestComments.$inferSelect;
+
+export type InsertMonthlyArchive = z.infer<typeof insertMonthlyArchiveSchema>;
+export type MonthlyArchive = typeof monthlyArchive.$inferSelect;
+
 export type LoginData = z.infer<typeof loginSchema>;
 
 // User without password for frontend
@@ -270,3 +387,12 @@ export const SHIFT_TYPES = ["one_shift", "two_shifts", "open"] as const;
 
 // WhatsApp preferences
 export const WHATSAPP_PREFERENCES = ["both", "breaks_only", "shift_reports_only", "none"] as const;
+
+// Special Request statuses
+export const SPECIAL_REQUEST_STATUSES = [
+  "sent_for_approval",
+  "approved",
+  "not_approved",
+  "revision",
+  "resolved",
+] as const;
