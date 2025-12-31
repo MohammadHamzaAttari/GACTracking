@@ -1,35 +1,63 @@
+// client/src/pages/admin/dashboard.tsx
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { format } from "date-fns";
 import {
   Users,
   Clock,
   UserCheck,
-  UserX,
-  TrendingUp,
-  Calendar,
+  Coffee,
   Sun,
   Moon,
-  Coffee,
+  Search,
+  Filter,
+  RefreshCw,
+  Activity,
+  TrendingUp,
+  Zap,
+  Timer,
+  Building2,
+  ChevronRight,
+  Circle,
+  Pause,
+  Play,
+  LogIn,
+  LogOut,
+  MoreHorizontal,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 import type { Shift, SafeUser, Break } from "@shared/schema";
 
 interface DashboardStats {
   totalEmployees: number;
-  presentToday: number;
-  absentToday: number;
-  lateToday: number;
-  attendanceRate: number;
+  activeWorking: number;
+  onBreak: number;
+  notStarted: number;
 }
 
 interface TodayShift extends Shift {
@@ -37,294 +65,457 @@ interface TodayShift extends Shift {
   breaks?: Break[];
 }
 
-function StatCard({
-  title,
-  value,
-  icon: Icon,
-  description,
-  trend,
-  gradientClass,
-}: {
-  title: string;
-  value: string | number;
-  icon: React.ElementType;
-  description?: string;
-  trend?: "up" | "down" | "neutral";
-  gradientClass?: string;
+// Helpers
+function getInitials(firstName: string, lastName: string) {
+  return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase() || "?";
+}
+
+function getAvatarGradient(name: string) {
+  const gradients = [
+    "from-violet-500 to-purple-600",
+    "from-blue-500 to-cyan-500",
+    "from-emerald-500 to-teal-500",
+    "from-orange-500 to-red-500",
+    "from-pink-500 to-rose-500",
+    "from-indigo-500 to-blue-600",
+    "from-amber-500 to-orange-500",
+    "from-cyan-500 to-blue-500",
+  ];
+  const index = (name?.charCodeAt(0) || 0) % gradients.length;
+  return gradients[index];
+}
+
+function getEmployeeStatus(shift: TodayShift) {
+  const hasActiveBreak = shift.breaks?.some(b => !b.endTime);
+  
+  if (hasActiveBreak) {
+    return { status: "break", label: "On Break", color: "text-orange-500", bg: "bg-orange-500", dot: "bg-orange-500 animate-pulse" };
+  }
+  
+  if (shift.eveningClockIn && !shift.eveningClockOut) {
+    return { status: "evening", label: "Evening Shift", color: "text-blue-500", bg: "bg-blue-500", dot: "bg-blue-500 animate-pulse" };
+  }
+  
+  if (shift.morningClockIn && !shift.morningClockOut) {
+    return { status: "morning", label: "Morning Shift", color: "text-emerald-500", bg: "bg-emerald-500", dot: "bg-emerald-500 animate-pulse" };
+  }
+  
+  if (shift.eveningClockOut || shift.morningClockOut) {
+    return { status: "completed", label: "Completed", color: "text-slate-500", bg: "bg-slate-500", dot: "bg-slate-400" };
+  }
+  
+  return { status: "not_started", label: "Not Started", color: "text-slate-400", bg: "bg-slate-400", dot: "bg-slate-300" };
+}
+
+function calculateWorkTime(shift: TodayShift): string {
+  let totalMinutes = 0;
+  
+  if (shift.morningClockIn) {
+    const start = new Date(shift.morningClockIn);
+    const end = shift.morningClockOut ? new Date(shift.morningClockOut) : new Date();
+    totalMinutes += Math.floor((end.getTime() - start.getTime()) / 60000);
+  }
+  
+  if (shift.eveningClockIn) {
+    const start = new Date(shift.eveningClockIn);
+    const end = shift.eveningClockOut ? new Date(shift.eveningClockOut) : new Date();
+    totalMinutes += Math.floor((end.getTime() - start.getTime()) / 60000);
+  }
+  
+  if (totalMinutes <= 0) return "-";
+  
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  return `${hours}h ${mins}m`;
+}
+
+function getActiveBreakType(shift: TodayShift): string | null {
+  const activeBreak = shift.breaks?.find(b => !b.endTime);
+  return activeBreak?.type || null;
+}
+
+// Mini Stat Component
+function MiniStat({ 
+  icon: Icon, 
+  value, 
+  label, 
+  color,
+  active,
+  onClick 
+}: { 
+  icon: any; 
+  value: number; 
+  label: string; 
+  color: string;
+  active?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <Card className="card-gradient animate-fade-in">
-      <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {title}
-        </CardTitle>
-        <div className={`p-2 rounded-md ${gradientClass || "gradient-primary"}`}>
-          <Icon className="h-4 w-4 text-white" />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold" data-testid={`stat-${title.toLowerCase().replace(" ", "-")}`}>
-          {value}
-        </div>
-        {description && (
-          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-            {trend === "up" && <TrendingUp className="h-3 w-3 text-green-500" />}
-            {description}
-          </p>
-        )}
-      </CardContent>
-    </Card>
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-2 px-3 py-1.5 rounded-full transition-all text-xs font-medium",
+        "hover:scale-105 active:scale-95",
+        active 
+          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-lg" 
+          : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 shadow-sm hover:shadow-md"
+      )}
+    >
+      <Icon className={cn("h-3.5 w-3.5", active ? "" : color)} />
+      <span className="font-bold">{value}</span>
+      <span className="hidden sm:inline opacity-70">{label}</span>
+    </button>
   );
 }
 
-function getInitials(firstName: string, lastName: string) {
-  return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase() || "U";
+// Employee Card Component
+function EmployeeCard({ shift }: { shift: TodayShift }) {
+  const statusInfo = getEmployeeStatus(shift);
+  const workTime = calculateWorkTime(shift);
+  const activeBreakType = getActiveBreakType(shift);
+  const isActive = statusInfo.status === "morning" || statusInfo.status === "evening" || statusInfo.status === "break";
+  
+  return (
+    <div className={cn(
+      "group relative p-4 rounded-2xl transition-all duration-300",
+      "bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800",
+      "hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-slate-900/50",
+      "hover:-translate-y-1 hover:border-slate-200 dark:hover:border-slate-700",
+      isActive && "ring-2 ring-offset-2 ring-offset-background",
+      statusInfo.status === "morning" && "ring-emerald-500/50",
+      statusInfo.status === "evening" && "ring-blue-500/50",
+      statusInfo.status === "break" && "ring-orange-500/50",
+    )}>
+      {/* Status Indicator Line */}
+      <div className={cn(
+        "absolute top-0 left-4 right-4 h-1 rounded-b-full opacity-80",
+        statusInfo.bg
+      )} />
+      
+      <div className="flex items-start gap-3 mt-1">
+        {/* Avatar with Status */}
+        <div className="relative">
+          <Avatar className="h-12 w-12 ring-2 ring-white dark:ring-slate-900 shadow-md">
+            <AvatarFallback className={cn(
+              "text-sm font-bold text-white bg-gradient-to-br",
+              getAvatarGradient(shift.user?.firstName || "")
+            )}>
+              {getInitials(shift.user?.firstName || "", shift.user?.lastName || "")}
+            </AvatarFallback>
+          </Avatar>
+          <span className={cn(
+            "absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-white dark:border-slate-900",
+            statusInfo.dot
+          )} />
+        </div>
+        
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h3 className="font-semibold text-sm text-slate-900 dark:text-white truncate">
+                {shift.user?.firstName} {shift.user?.lastName}
+              </h3>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                {shift.user?.department && (
+                  <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                    <Building2 className="h-2.5 w-2.5" />
+                    {shift.user.department}
+                  </span>
+                )}
+              </div>
+            </div>
+            
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem>View Profile</DropdownMenuItem>
+                <DropdownMenuItem>View Attendance</DropdownMenuItem>
+                <DropdownMenuItem>Send Message</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          
+          {/* Status Badge */}
+          <div className="flex items-center gap-2 mt-2">
+            <Badge 
+              variant="secondary" 
+              className={cn(
+                "text-[10px] font-semibold gap-1 px-2",
+                statusInfo.status === "morning" && "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
+                statusInfo.status === "evening" && "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400",
+                statusInfo.status === "break" && "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400",
+                statusInfo.status === "completed" && "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
+                statusInfo.status === "not_started" && "bg-slate-50 text-slate-400 dark:bg-slate-800/50 dark:text-slate-500",
+              )}
+            >
+              {statusInfo.status === "morning" && <Sun className="h-2.5 w-2.5" />}
+              {statusInfo.status === "evening" && <Moon className="h-2.5 w-2.5" />}
+              {statusInfo.status === "break" && <Coffee className="h-2.5 w-2.5" />}
+              {statusInfo.label}
+            </Badge>
+            
+            {activeBreakType && (
+              <span className="text-[10px] text-orange-600 dark:text-orange-400 capitalize">
+                {activeBreakType}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      
+      {/* Time Info */}
+      <div className="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+        <div className="text-center">
+          <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">In</p>
+          <p className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
+            {shift.morningClockIn 
+              ? format(new Date(shift.morningClockIn), "h:mm a")
+              : "-"}
+          </p>
+        </div>
+        <div className="text-center border-x border-slate-100 dark:border-slate-800">
+          <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Breaks</p>
+          <p className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
+            {shift.breaks?.length || 0}
+          </p>
+        </div>
+        <div className="text-center">
+          <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Time</p>
+          <p className={cn(
+            "text-xs font-mono font-semibold",
+            isActive ? "text-emerald-600 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"
+          )}>
+            {workTime}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function getStatusColor(status: string) {
-  switch (status) {
-    case "present":
-      return "bg-green-500/10 text-green-600 dark:text-green-400";
-    case "late":
-      return "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400";
-    case "absent":
-      return "bg-red-500/10 text-red-600 dark:text-red-400";
-    case "half_day":
-      return "bg-orange-500/10 text-orange-600 dark:text-orange-400";
-    case "not_started":
-      return "bg-gray-500/10 text-gray-600 dark:text-gray-400";
-    default:
-      return "";
-  }
-}
-
-function getCurrentShiftStatus(shift: TodayShift) {
-  if (shift.eveningClockIn && !shift.eveningClockOut) {
-    return "evening_active";
-  }
-  if (shift.morningClockIn && !shift.morningClockOut) {
-    return "morning_active";
-  }
-  if (shift.eveningClockOut) {
-    return "evening_complete";
-  }
-  if (shift.morningClockOut) {
-    return "morning_complete";
-  }
-  return "not_started";
-}
-
+// Main Dashboard
 export default function AdminDashboard() {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedDepartment, setSelectedDepartment] = useState("all");
+  const [selectedStatus, setSelectedStatus] = useState("all");
+
   const { data: stats, isLoading: statsLoading } = useQuery<DashboardStats>({
     queryKey: ["/api/admin/stats"],
+    refetchInterval: 30000,
   });
 
-  const { data: todayShifts, isLoading: shiftsLoading } = useQuery<TodayShift[]>({
+  const { data: todayShifts = [], isLoading: shiftsLoading, refetch } = useQuery<TodayShift[]>({
     queryKey: ["/api/admin/shifts/today"],
+    refetchInterval: 15000,
   });
 
-  const today = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  // Get unique departments
+  const departments = useMemo(() => {
+    const depts = new Set<string>();
+    todayShifts.forEach((shift) => {
+      if (shift.user?.department) depts.add(shift.user.department);
+    });
+    return Array.from(depts).sort();
+  }, [todayShifts]);
+
+  // Filter shifts
+  const filteredShifts = useMemo(() => {
+    let filtered = [...todayShifts];
+
+    // Search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter((shift) =>
+        `${shift.user?.firstName} ${shift.user?.lastName}`.toLowerCase().includes(query) ||
+        shift.user?.department?.toLowerCase().includes(query)
+      );
+    }
+
+    // Department filter
+    if (selectedDepartment !== "all") {
+      filtered = filtered.filter((shift) => shift.user?.department === selectedDepartment);
+    }
+
+    // Status filter
+    if (selectedStatus !== "all") {
+      filtered = filtered.filter((shift) => {
+        const status = getEmployeeStatus(shift).status;
+        if (selectedStatus === "active") return status === "morning" || status === "evening";
+        if (selectedStatus === "break") return status === "break";
+        if (selectedStatus === "completed") return status === "completed";
+        return true;
+      });
+    }
+
+    return filtered;
+  }, [todayShifts, searchQuery, selectedDepartment, selectedStatus]);
+
+  // Group by status for quick stats
+  const statusCounts = useMemo(() => {
+    let active = 0;
+    let onBreak = 0;
+    let completed = 0;
+    
+    todayShifts.forEach((shift) => {
+      const status = getEmployeeStatus(shift).status;
+      if (status === "morning" || status === "evening") active++;
+      else if (status === "break") onBreak++;
+      else if (status === "completed") completed++;
+    });
+    
+    return { active, onBreak, completed };
+  }, [todayShifts]);
+
+  if (statsLoading || shiftsLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-3 animate-pulse">
+            <Activity className="h-5 w-5 text-primary" />
+          </div>
+          <p className="text-sm text-muted-foreground">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between animate-fade-in">
-        <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">
-            <span className="gradient-text">Admin Dashboard</span>
-          </h1>
-          <p className="text-muted-foreground text-sm">{today}</p>
+    <div className="h-full flex flex-col gap-3 p-2">
+      {/* Compact Header Bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Stats Pills */}
+        <div className="flex items-center gap-1.5">
+          <MiniStat
+            icon={Users}
+            value={stats?.totalEmployees || 0}
+            label="Total"
+            color="text-slate-500"
+            active={selectedStatus === "all"}
+            onClick={() => setSelectedStatus("all")}
+          />
+          <MiniStat
+            icon={Zap}
+            value={statusCounts.active}
+            label="Active"
+            color="text-emerald-500"
+            active={selectedStatus === "active"}
+            onClick={() => setSelectedStatus("active")}
+          />
+          <MiniStat
+            icon={Coffee}
+            value={statusCounts.onBreak}
+            label="Break"
+            color="text-orange-500"
+            active={selectedStatus === "break"}
+            onClick={() => setSelectedStatus("break")}
+          />
+          <MiniStat
+            icon={UserCheck}
+            value={statusCounts.completed}
+            label="Done"
+            color="text-blue-500"
+            active={selectedStatus === "completed"}
+            onClick={() => setSelectedStatus("completed")}
+          />
         </div>
-        <Badge className="w-fit flex items-center gap-1 gradient-primary text-white border-0">
-          <Calendar className="h-3 w-3" />
-          Today's Overview
-        </Badge>
-      </div>
 
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-        {statsLoading ? (
-          <>
-            {[...Array(4)].map((_, i) => (
-              <Card key={i}>
-                <CardHeader className="pb-2">
-                  <Skeleton className="h-4 w-24" />
-                </CardHeader>
-                <CardContent>
-                  <Skeleton className="h-8 w-16" />
-                </CardContent>
-              </Card>
+        <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+        {/* Search */}
+        <div className="relative flex-1 min-w-[160px] max-w-[220px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+          <Input
+            placeholder="Search staff..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-8 pl-8 text-xs bg-white dark:bg-slate-800 border-0 shadow-sm"
+          />
+        </div>
+
+        {/* Department Filter */}
+        <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
+          <SelectTrigger className="h-8 w-[140px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
+            <Building2 className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue placeholder="Department" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Depts</SelectItem>
+            {departments.map((dept) => (
+              <SelectItem key={dept} value={dept}>{dept}</SelectItem>
             ))}
-          </>
-        ) : (
-          <>
-            <StatCard
-              title="Total Employees"
-              value={stats?.totalEmployees || 0}
-              icon={Users}
-              description="Active team members"
-              gradientClass="gradient-primary"
-            />
-            <StatCard
-              title="Present Today"
-              value={stats?.presentToday || 0}
-              icon={UserCheck}
-              description="On time arrivals"
-              trend="up"
-              gradientClass="gradient-success"
-            />
-            <StatCard
-              title="Absent Today"
-              value={stats?.absentToday || 0}
-              icon={UserX}
-              description="Not checked in"
-              gradientClass="bg-gradient-to-r from-red-500 to-orange-500"
-            />
-            <StatCard
-              title="Attendance Rate"
-              value={`${stats?.attendanceRate || 0}%`}
-              icon={TrendingUp}
-              description="This month"
-              trend="up"
-              gradientClass="gradient-accent"
-            />
-          </>
-        )}
+          </SelectContent>
+        </Select>
+
+        {/* Actions */}
+        <div className="flex items-center gap-1 ml-auto">
+          {(searchQuery || selectedDepartment !== "all" || selectedStatus !== "all") && (
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              className="h-8 text-xs"
+              onClick={() => {
+                setSearchQuery("");
+                setSelectedDepartment("all");
+                setSelectedStatus("all");
+              }}
+            >
+              Clear
+            </Button>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()}>
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh</TooltipContent>
+          </Tooltip>
+          <Badge variant="outline" className="text-[10px] font-normal hidden md:flex">
+            <Activity className="h-2.5 w-2.5 mr-1 text-emerald-500 animate-pulse" />
+            Live
+          </Badge>
+        </div>
       </div>
 
-      <Card className="card-gradient animate-slide-up">
-        <CardHeader className="flex flex-row items-center justify-between gap-2">
-          <CardTitle className="flex items-center gap-2">
-            <div className="p-1.5 rounded-md gradient-primary">
-              <Clock className="h-4 w-4 text-white" />
+      {/* Results Count */}
+      <div className="flex items-center justify-between px-1">
+        <p className="text-xs text-muted-foreground">
+          Showing <span className="font-semibold text-foreground">{filteredShifts.length}</span> of {todayShifts.length} employees
+        </p>
+        <p className="text-[10px] text-muted-foreground hidden sm:block">
+          {format(new Date(), "EEEE, MMM d • h:mm a")}
+        </p>
+      </div>
+
+      {/* Employee Cards Grid - Maximum Space */}
+      <ScrollArea className="flex-1 -mx-2 px-2">
+        {filteredShifts.length === 0 ? (
+          <div className="h-full flex items-center justify-center py-20">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-4">
+                <Users className="h-6 w-6 text-slate-400" />
+              </div>
+              <p className="font-medium text-slate-900 dark:text-white mb-1">No employees found</p>
+              <p className="text-sm text-slate-500">
+                {searchQuery || selectedDepartment !== "all" || selectedStatus !== "all"
+                  ? "Try adjusting your filters"
+                  : "No one has clocked in yet today"}
+              </p>
             </div>
-            Staff Activity Monitor
-          </CardTitle>
-          <Badge className="text-xs gradient-primary text-white border-0 animate-pulse">
-            Live Status
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          {shiftsLoading ? (
-            <div className="space-y-3">
-              {[...Array(5)].map((_, i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-10 w-10 rounded-full" />
-                  <div className="space-y-2">
-                    <Skeleton className="h-4 w-32" />
-                    <Skeleton className="h-3 w-24" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : todayShifts && todayShifts.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Employee</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Morning Shift</TableHead>
-                  <TableHead>Evening Shift</TableHead>
-                  <TableHead>Breaks</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {todayShifts.map((shift) => {
-                  const shiftStatus = getCurrentShiftStatus(shift);
-                  const fullName = `${shift.user?.firstName || ""} ${shift.user?.lastName || ""}`.trim();
-                  return (
-                    <TableRow key={shift.id} data-testid={`row-shift-${shift.id}`}>
-                      <TableCell>
-                        <div className="flex items-center gap-3">
-                          <Avatar className="h-8 w-8">
-                            <AvatarFallback className="text-xs bg-primary/10 text-primary">
-                              {getInitials(shift.user?.firstName || "", shift.user?.lastName || "")}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div>
-                            <p className="font-medium text-sm">{fullName || "Unknown"}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {shift.user?.department || "No department"}
-                            </p>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge className={getStatusColor(shift.status)} variant="secondary">
-                          {shift.status === "not_started" ? "Not Started" : 
-                           shift.status.charAt(0).toUpperCase() + shift.status.slice(1).replace("_", " ")}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        <div className="flex items-center gap-2">
-                          <Sun className="h-3 w-3 text-yellow-500" />
-                          <div>
-                            {shift.morningClockIn
-                              ? new Date(shift.morningClockIn).toLocaleTimeString("en-US", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : "-"}
-                            {shift.morningClockIn && (
-                              <span className="text-muted-foreground mx-1">to</span>
-                            )}
-                            {shift.morningClockOut
-                              ? new Date(shift.morningClockOut).toLocaleTimeString("en-US", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : shift.morningClockIn && shiftStatus === "morning_active" 
-                                ? <Badge variant="outline" className="text-xs ml-1 text-green-600">Active</Badge>
-                                : ""}
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        <div className="flex items-center gap-2">
-                          <Moon className="h-3 w-3 text-blue-500" />
-                          <div>
-                            {shift.eveningClockIn
-                              ? new Date(shift.eveningClockIn).toLocaleTimeString("en-US", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : "-"}
-                            {shift.eveningClockIn && (
-                              <span className="text-muted-foreground mx-1">to</span>
-                            )}
-                            {shift.eveningClockOut
-                              ? new Date(shift.eveningClockOut).toLocaleTimeString("en-US", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : shift.eveningClockIn && shiftStatus === "evening_active"
-                                ? <Badge variant="outline" className="text-xs ml-1 text-green-600">Active</Badge>
-                                : ""}
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <Coffee className="h-3 w-3 text-muted-foreground" />
-                          <span className="text-sm">{shift.breaks?.length || 0}</span>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          ) : (
-            <div className="text-center py-8">
-              <Clock className="h-12 w-12 mx-auto text-muted-foreground/50" />
-              <p className="mt-2 text-muted-foreground">No attendance records yet today</p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 pb-4">
+            {filteredShifts.map((shift) => (
+              <EmployeeCard key={shift.id} shift={shift} />
+            ))}
+          </div>
+        )}
+      </ScrollArea>
     </div>
   );
 }

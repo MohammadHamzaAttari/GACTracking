@@ -1123,8 +1123,11 @@ export async function registerRoutes(
 
   // ============= SPECIAL REQUEST ROUTES =============
 
+  // Create special request (Employee)
   app.post("/api/requests/special", requireAuth, async (req, res) => {
     try {
+      const userId = req.session.userId!;
+      
       // Validate required fields
       if (!req.body.title || req.body.title.trim() === '') {
         return res.status(400).json({ error: "Title is required" });
@@ -1134,17 +1137,22 @@ export async function registerRoutes(
       }
       
       const requestData = {
-        userId: req.session.userId!,
+        userId,
         title: req.body.title.trim(),
         details: req.body.details.trim(),
         month: req.body.month || new Date().toISOString().slice(0, 7),
         status: "sent_for_approval",
+        archived: false,
       };
+      
+      console.log("Creating special request:", requestData);
       
       const request = await storage.createSpecialRequest(requestData);
       
+      console.log("Created special request:", request);
+      
       await storage.createActivityLog({
-        userId: req.session.userId!,
+        userId,
         action: "special_request_created",
         details: `Created special request: ${requestData.title}`,
         timestamp: new Date(),
@@ -1160,10 +1168,18 @@ export async function registerRoutes(
     }
   });
 
+  // Get my special requests (Employee)
   app.get("/api/requests/special/my", requireAuth, async (req, res) => {
     try {
-      const month = req.query.month as string | undefined;
-      const requests = await storage.getSpecialRequestsByUser(req.session.userId!, month);
+      const userId = req.session.userId!;
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+      
+      console.log("Fetching requests for user:", userId, "month:", month);
+      
+      const requests = await storage.getSpecialRequestsByUser(userId, month);
+      
+      console.log("Found requests:", requests.length);
+      
       res.json(requests);
     } catch (error) {
       console.error("Failed to fetch requests:", error);
@@ -1171,21 +1187,22 @@ export async function registerRoutes(
     }
   });
 
+  // Get all special requests (Admin) - WITH USER DATA
   app.get("/api/admin/requests/special", requireAdmin, async (req, res) => {
     try {
-      const month = req.query.month as string;
-      const status = req.query.status as string | undefined;
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+      const status = req.query.status as string;
       
-      if (!month) {
-        return res.status(400).json({ error: "Month parameter required" });
-      }
-
+      console.log("Admin fetching requests - Month:", month, "Status:", status);
+      
       let requests;
-      if (status) {
-        requests = await storage.getSpecialRequestsByStatus(status, month);
+      if (status && status !== "all") {
+        requests = await storage.getSpecialRequestsByStatusWithUser(status, month);
       } else {
-        requests = await storage.getSpecialRequestsByMonth(month);
+        requests = await storage.getSpecialRequestsByMonthWithUser(month);
       }
+      
+      console.log("Found admin requests:", requests.length);
       
       res.json(requests);
     } catch (error) {
@@ -1194,6 +1211,7 @@ export async function registerRoutes(
     }
   });
 
+  // Update special request status (Admin)
   app.patch("/api/admin/requests/special/:id", requireAdmin, async (req, res) => {
     try {
       const { status } = req.body;
@@ -1217,57 +1235,72 @@ export async function registerRoutes(
 
   // ============= REQUEST COMMENT ROUTES =============
 
+  // Add comment to request
   app.post("/api/requests/special/:id/comments", requireAuth, async (req, res) => {
     try {
+      const requestId = req.params.id;
+      const userId = req.session.userId!;
+      const isAdmin = req.session.role === "admin";
       const { comment, statusChange } = req.body;
       
       if (!comment || comment.trim() === '') {
         return res.status(400).json({ error: "Comment is required" });
       }
 
-      const request = await storage.getSpecialRequest(req.params.id);
+      // Check if request exists
+      const request = await storage.getSpecialRequest(requestId);
       if (!request) {
         return res.status(404).json({ error: "Request not found" });
       }
 
-      // Check permissions
-      if (request.userId !== req.session.userId && req.session.role !== "admin") {
+      // Check permissions - employee can only comment on their own requests
+      if (!isAdmin && request.userId !== userId) {
         return res.status(403).json({ error: "Forbidden" });
       }
 
+      // Create the comment
       const newComment = await storage.addRequestComment({
-        requestId: req.params.id,
-        userId: req.session.userId!,
+        requestId,
+        userId,
         comment: comment.trim(),
-        isAdminComment: req.session.role === "admin",
-        statusChange,
+        isAdminComment: isAdmin,
+        statusChange: isAdmin && statusChange ? statusChange : null,
       });
 
-      // Update request status if provided
-      if (statusChange && SPECIAL_REQUEST_STATUSES.includes(statusChange)) {
-        await storage.updateSpecialRequest(req.params.id, { status: statusChange });
+      // Update request status if admin changed it
+      if (isAdmin && statusChange && SPECIAL_REQUEST_STATUSES.includes(statusChange)) {
+        await storage.updateSpecialRequest(requestId, { status: statusChange });
       }
 
-      res.json(newComment);
+      // Fetch comment with user info
+      const commentWithUser = await storage.getRequestCommentWithUser(newComment.id);
+
+      res.json(commentWithUser || newComment);
     } catch (error) {
       console.error("Failed to add comment:", error);
       res.status(500).json({ error: "Failed to add comment" });
     }
   });
 
+  // Get comments for a request
   app.get("/api/requests/special/:id/comments", requireAuth, async (req, res) => {
     try {
-      const request = await storage.getSpecialRequest(req.params.id);
+      const requestId = req.params.id;
+      const userId = req.session.userId!;
+      const isAdmin = req.session.role === "admin";
+
+      // Check if request exists
+      const request = await storage.getSpecialRequest(requestId);
       if (!request) {
         return res.status(404).json({ error: "Request not found" });
       }
 
       // Check permissions
-      if (request.userId !== req.session.userId && req.session.role !== "admin") {
+      if (!isAdmin && request.userId !== userId) {
         return res.status(403).json({ error: "Forbidden" });
       }
 
-      const comments = await storage.getRequestComments(req.params.id);
+      const comments = await storage.getRequestCommentsWithUser(requestId);
       res.json(comments);
     } catch (error) {
       console.error("Failed to fetch comments:", error);
@@ -1314,6 +1347,20 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Failed to archive month:", error);
       res.status(500).json({ error: "Failed to archive month" });
+    }
+  });
+
+  // ============= DEBUG ROUTE (Remove in production) =============
+  app.get("/api/debug/requests", requireAdmin, async (req, res) => {
+    try {
+      const allRequests = await storage.getAllSpecialRequests();
+      res.json({
+        count: allRequests.length,
+        requests: allRequests
+      });
+    } catch (error) {
+      console.error("Debug error:", error);
+      res.status(500).json({ error: String(error) });
     }
   });
 

@@ -1,3 +1,4 @@
+// server/storage.ts
 import { 
   users, 
   shifts,
@@ -111,10 +112,15 @@ export interface IStorage {
   getSpecialRequestsByUser(userId: string, month?: string): Promise<SpecialRequest[]>;
   getSpecialRequestsByMonth(month: string): Promise<(SpecialRequest & { user: SafeUser })[]>;
   getSpecialRequestsByStatus(status: string, month?: string): Promise<(SpecialRequest & { user: SafeUser })[]>;
+  getSpecialRequestsByStatusWithUser(status: string, month: string): Promise<any[]>;
+  getSpecialRequestsByMonthWithUser(month: string): Promise<any[]>;
+  getAllSpecialRequests(): Promise<SpecialRequest[]>;
 
   // Request Comment methods
   getRequestComments(requestId: string): Promise<(RequestComment & { user: SafeUser })[]>;
   addRequestComment(comment: InsertRequestComment): Promise<RequestComment>;
+  getRequestCommentsWithUser(requestId: string): Promise<any[]>;
+  getRequestCommentWithUser(commentId: string): Promise<any>;
 
   // Archive methods
   getMonthlyArchive(month: string): Promise<MonthlyArchive | undefined>;
@@ -166,6 +172,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteUser(id: string): Promise<void> {
+    // Delete related records first
+    await db.delete(requestComments).where(eq(requestComments.userId, id));
+    await db.delete(specialRequests).where(eq(specialRequests.userId, id));
+    await db.delete(dailyShiftReports).where(eq(dailyShiftReports.userId, id));
+    await db.delete(targetItems).where(eq(targetItems.userId, id));
+    await db.delete(targets).where(eq(targets.userId, id));
     await db.delete(activityLogs).where(eq(activityLogs.userId, id));
     await db.delete(breaks).where(eq(breaks.userId, id));
     await db.delete(shifts).where(eq(shifts.userId, id));
@@ -766,7 +778,8 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
-  // Daily Shift Report methods
+  // ============= DAILY SHIFT REPORT METHODS =============
+
   async getDailyShiftReport(id: string): Promise<DailyShiftReport | undefined> {
     const [report] = await db
       .select()
@@ -786,7 +799,7 @@ export class DatabaseStorage implements IStorage {
   async updateDailyShiftReport(id: string, data: Partial<InsertDailyShiftReport>): Promise<DailyShiftReport | undefined> {
     const [updated] = await db
       .update(dailyShiftReports)
-      .set(data)
+      .set({ ...data, updatedAt: new Date() })
       .where(eq(dailyShiftReports.id, id))
       .returning();
     return updated || undefined;
@@ -859,7 +872,8 @@ export class DatabaseStorage implements IStorage {
     return report || undefined;
   }
 
-  // Special Request methods
+  // ============= SPECIAL REQUEST METHODS =============
+
   async getSpecialRequest(id: string): Promise<SpecialRequest | undefined> {
     const [request] = await db
       .select()
@@ -869,17 +883,26 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createSpecialRequest(request: InsertSpecialRequest): Promise<SpecialRequest> {
+    console.log("Storage: Creating special request with data:", request);
     const [created] = await db
       .insert(specialRequests)
-      .values(request)
+      .values({
+        userId: request.userId,
+        title: request.title,
+        details: request.details,
+        month: request.month,
+        status: request.status || "sent_for_approval",
+        archived: request.archived || false,
+      })
       .returning();
+    console.log("Storage: Created special request:", created);
     return created;
   }
 
   async updateSpecialRequest(id: string, data: Partial<InsertSpecialRequest>): Promise<SpecialRequest | undefined> {
     const [updated] = await db
       .update(specialRequests)
-      .set(data)
+      .set({ ...data, updatedAt: new Date() })
       .where(eq(specialRequests.id, id))
       .returning();
     return updated || undefined;
@@ -892,11 +915,14 @@ export class DatabaseStorage implements IStorage {
       conditions.push(eq(specialRequests.month, month));
     }
     
-    return db
+    const requests = await db
       .select()
       .from(specialRequests)
       .where(and(...conditions))
       .orderBy(desc(specialRequests.createdAt));
+    
+    console.log(`Storage: Found ${requests.length} requests for user ${userId}, month: ${month}`);
+    return requests;
   }
 
   async getSpecialRequestsByMonth(month: string): Promise<(SpecialRequest & { user: SafeUser })[]> {
@@ -989,7 +1015,88 @@ export class DatabaseStorage implements IStorage {
     return requests as (SpecialRequest & { user: SafeUser })[];
   }
 
-  // Request Comment methods
+  // NEW: Get special requests by status with user data (for admin)
+  async getSpecialRequestsByStatusWithUser(status: string, month: string): Promise<any[]> {
+    console.log(`Storage: Fetching requests with status "${status}" for month "${month}"`);
+    
+    const requests = await db
+      .select({
+        id: specialRequests.id,
+        userId: specialRequests.userId,
+        title: specialRequests.title,
+        details: specialRequests.details,
+        status: specialRequests.status,
+        month: specialRequests.month,
+        archived: specialRequests.archived,
+        createdAt: specialRequests.createdAt,
+        updatedAt: specialRequests.updatedAt,
+        user: {
+          id: users.id,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          department: users.department,
+          email: users.email,
+        },
+      })
+      .from(specialRequests)
+      .leftJoin(users, eq(specialRequests.userId, users.id))
+      .where(
+        and(
+          eq(specialRequests.status, status),
+          eq(specialRequests.month, month)
+        )
+      )
+      .orderBy(desc(specialRequests.createdAt));
+    
+    console.log(`Storage: Found ${requests.length} requests`);
+    return requests;
+  }
+
+  // NEW: Get special requests by month with user data (for admin)
+  async getSpecialRequestsByMonthWithUser(month: string): Promise<any[]> {
+    console.log(`Storage: Fetching all requests for month "${month}"`);
+    
+    const requests = await db
+      .select({
+        id: specialRequests.id,
+        userId: specialRequests.userId,
+        title: specialRequests.title,
+        details: specialRequests.details,
+        status: specialRequests.status,
+        month: specialRequests.month,
+        archived: specialRequests.archived,
+        createdAt: specialRequests.createdAt,
+        updatedAt: specialRequests.updatedAt,
+        user: {
+          id: users.id,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          department: users.department,
+          email: users.email,
+        },
+      })
+      .from(specialRequests)
+      .leftJoin(users, eq(specialRequests.userId, users.id))
+      .where(eq(specialRequests.month, month))
+      .orderBy(desc(specialRequests.createdAt));
+    
+    console.log(`Storage: Found ${requests.length} requests`);
+    return requests;
+  }
+
+  // NEW: Get all special requests (for debugging)
+  async getAllSpecialRequests(): Promise<SpecialRequest[]> {
+    const requests = await db
+      .select()
+      .from(specialRequests)
+      .orderBy(desc(specialRequests.createdAt));
+    
+    console.log(`Storage: Total requests in database: ${requests.length}`);
+    return requests;
+  }
+
+  // ============= REQUEST COMMENT METHODS =============
+
   async getRequestComments(requestId: string): Promise<(RequestComment & { user: SafeUser })[]> {
     const comments = await db
       .select({
@@ -1038,7 +1145,55 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  // Archive methods
+  // NEW: Get request comments with user info
+  async getRequestCommentsWithUser(requestId: string): Promise<any[]> {
+    const comments = await db
+      .select({
+        id: requestComments.id,
+        requestId: requestComments.requestId,
+        comment: requestComments.comment,
+        isAdminComment: requestComments.isAdminComment,
+        statusChange: requestComments.statusChange,
+        createdAt: requestComments.createdAt,
+        user: {
+          id: users.id,
+          firstName: users.firstName,
+          lastName: users.lastName,
+        },
+      })
+      .from(requestComments)
+      .leftJoin(users, eq(requestComments.userId, users.id))
+      .where(eq(requestComments.requestId, requestId))
+      .orderBy(requestComments.createdAt);
+    
+    return comments;
+  }
+
+  // NEW: Get single request comment with user info
+  async getRequestCommentWithUser(commentId: string): Promise<any> {
+    const [comment] = await db
+      .select({
+        id: requestComments.id,
+        requestId: requestComments.requestId,
+        comment: requestComments.comment,
+        isAdminComment: requestComments.isAdminComment,
+        statusChange: requestComments.statusChange,
+        createdAt: requestComments.createdAt,
+        user: {
+          id: users.id,
+          firstName: users.firstName,
+          lastName: users.lastName,
+        },
+      })
+      .from(requestComments)
+      .leftJoin(users, eq(requestComments.userId, users.id))
+      .where(eq(requestComments.id, commentId));
+    
+    return comment || null;
+  }
+
+  // ============= ARCHIVE METHODS =============
+
   async getMonthlyArchive(month: string): Promise<MonthlyArchive | undefined> {
     const [archive] = await db
       .select()
@@ -1048,22 +1203,37 @@ export class DatabaseStorage implements IStorage {
   }
 
   async archiveMonth(month: string): Promise<MonthlyArchive> {
-    const reportCount = await db
+    // Count reports for this month
+    const reportCountResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(dailyShiftReports)
       .where(eq(dailyShiftReports.month, month));
     
-    const requestCount = await db
+    // Count requests for this month
+    const requestCountResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(specialRequests)
       .where(eq(specialRequests.month, month));
     
+    // Mark reports as archived
+    await db
+      .update(dailyShiftReports)
+      .set({ archived: true })
+      .where(eq(dailyShiftReports.month, month));
+    
+    // Mark requests as archived
+    await db
+      .update(specialRequests)
+      .set({ archived: true })
+      .where(eq(specialRequests.month, month));
+    
+    // Create archive record
     const [archive] = await db
       .insert(monthlyArchive)
       .values({
         month,
-        totalReports: reportCount[0]?.count || 0,
-        totalRequests: requestCount[0]?.count || 0,
+        totalReports: Number(reportCountResult[0]?.count || 0),
+        totalRequests: Number(requestCountResult[0]?.count || 0),
       })
       .returning();
     

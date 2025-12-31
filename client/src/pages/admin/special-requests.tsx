@@ -1,22 +1,40 @@
-import { useState } from "react";
+// client/src/pages/admin/special-requests.tsx
+import { useState, useEffect, useMemo } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { format, parseISO } from "date-fns";
+import {
+  Send,
+  MessageSquare,
+  RefreshCw,
+  Clock,
+  CheckCircle,
+  XCircle,
+  RotateCcw,
+  Loader2,
+  Check,
+  X,
+  FileText,
+  Search,
+  Building2,
+  SlidersHorizontal,
+  ChevronDown,
+  MoreHorizontal,
+  CheckCircle2,
+  Sparkles,
+  ArrowUpRight,
+  Circle,
+} from "lucide-react";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { AlertCircle, MessageSquare, Check, X } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -24,351 +42,808 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
-const statusColors: Record<string, string> = {
-  sent_for_approval: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  approved: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-  not_approved: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-  revision: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-  resolved: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
+
+// Status configuration
+const statusConfig: Record<string, { 
+  label: string; 
+  shortLabel: string;
+  color: string; 
+  icon: any; 
+  bg: string;
+  dot: string;
+}> = {
+  sent_for_approval: {
+    label: "Pending Approval",
+    shortLabel: "Pending",
+    color: "text-blue-600 dark:text-blue-400",
+    bg: "bg-blue-500",
+    dot: "bg-blue-500",
+    icon: Clock,
+  },
+  approved: {
+    label: "Approved",
+    shortLabel: "Approved",
+    color: "text-emerald-600 dark:text-emerald-400",
+    bg: "bg-emerald-500",
+    dot: "bg-emerald-500",
+    icon: CheckCircle,
+  },
+  not_approved: {
+    label: "Rejected",
+    shortLabel: "Rejected",
+    color: "text-red-600 dark:text-red-400",
+    bg: "bg-red-500",
+    dot: "bg-red-500",
+    icon: XCircle,
+  },
+  revision: {
+    label: "Revision Requested",
+    shortLabel: "Revision",
+    color: "text-amber-600 dark:text-amber-400",
+    bg: "bg-amber-500",
+    dot: "bg-amber-500",
+    icon: RotateCcw,
+  },
+  resolved: {
+    label: "Resolved",
+    shortLabel: "Resolved",
+    color: "text-slate-600 dark:text-slate-400",
+    bg: "bg-slate-500",
+    dot: "bg-slate-400",
+    icon: CheckCircle2,
+  },
 };
 
+// Helpers
+function getInitials(firstName: string, lastName: string) {
+  return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase() || "?";
+}
+
+function getAvatarGradient(name: string) {
+  const gradients = [
+    "from-violet-500 to-purple-500",
+    "from-blue-500 to-cyan-500", 
+    "from-emerald-500 to-teal-500",
+    "from-orange-500 to-red-500",
+    "from-pink-500 to-rose-500",
+    "from-indigo-500 to-blue-500",
+  ];
+  const index = (name?.charCodeAt(0) || 0) % gradients.length;
+  return gradients[index];
+}
+
+// Mini Stat Pill Component
+function StatPill({ 
+  label, 
+  value, 
+  dotColor,
+  isActive,
+  onClick,
+}: { 
+  label: string; 
+  value: number; 
+  dotColor: string;
+  isActive?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-all",
+        "hover:scale-105 active:scale-95",
+        isActive 
+          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-lg" 
+          : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
+      )}
+    >
+      <span className={cn("w-2 h-2 rounded-full", dotColor)} />
+      <span>{label}</span>
+      <span className={cn(
+        "font-bold",
+        isActive ? "text-white dark:text-slate-900" : "text-slate-900 dark:text-white"
+      )}>
+        {value}
+      </span>
+    </button>
+  );
+}
+
+// Request List Item
+function RequestItem({ 
+  request, 
+  isSelected, 
+  onClick 
+}: { 
+  request: any; 
+  isSelected: boolean; 
+  onClick: () => void;
+}) {
+  const config = statusConfig[request.status] || statusConfig.sent_for_approval;
+  
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "w-full text-left p-3 rounded-xl transition-all duration-200",
+        "hover:bg-slate-50 dark:hover:bg-slate-800/50",
+        isSelected && "bg-gradient-to-r from-slate-100 to-slate-50 dark:from-slate-800 dark:to-slate-800/50 shadow-sm"
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className="relative">
+          <Avatar className="h-9 w-9">
+            <AvatarFallback className={cn(
+              "text-[11px] font-bold text-white bg-gradient-to-br",
+              getAvatarGradient(request.user?.firstName || "")
+            )}>
+              {getInitials(request.user?.firstName || "", request.user?.lastName || "")}
+            </AvatarFallback>
+          </Avatar>
+          <span className={cn(
+            "absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900",
+            config.dot
+          )} />
+        </div>
+        
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+              {request.user?.firstName} {request.user?.lastName}
+            </p>
+            <span className="text-[10px] text-slate-400 shrink-0">
+              {format(new Date(request.createdAt), "MMM d")}
+            </span>
+          </div>
+          <p className="text-xs text-slate-600 dark:text-slate-400 truncate mb-1">
+            {request.title}
+          </p>
+          <div className="flex items-center gap-2">
+            <span className={cn("text-[10px] font-medium", config.color)}>
+              {config.shortLabel}
+            </span>
+            {request.user?.department && (
+              <>
+                <span className="text-slate-300 dark:text-slate-600">•</span>
+                <span className="text-[10px] text-slate-400 truncate">
+                  {request.user.department}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+        
+        {isSelected && (
+          <ArrowUpRight className="h-4 w-4 text-slate-400 shrink-0" />
+        )}
+      </div>
+    </button>
+  );
+}
+
+// Main Component
 export default function AdminSpecialRequestsPage() {
   const { toast } = useToast();
+  
+  // States
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
-  const [selectedStatus, setSelectedStatus] = useState("sent_for_approval");
-  const [selectedRequest, setSelectedRequest] = useState<any>(null);
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [selectedStatus, setSelectedStatus] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedDepartment, setSelectedDepartment] = useState("all");
+  const [sortBy, setSortBy] = useState<"newest" | "oldest">("newest");
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [responseComment, setResponseComment] = useState("");
   const [responseStatus, setResponseStatus] = useState("");
 
-  // Get requests by status and month
-  const { data: requests = [], isLoading, refetch } = useQuery({
-    queryKey: ["admin-requests", selectedMonth, selectedStatus],
+  // Fetch requests
+  const { data: rawRequests = [], isLoading, refetch: refetchRequests } = useQuery({
+    queryKey: ["admin-requests", selectedMonth],
     queryFn: async () => {
-      const res = await apiRequest(
-        "GET",
-        `/api/admin/requests/special?month=${selectedMonth}&status=${selectedStatus}`
-      );
+      const res = await apiRequest("GET", `/api/admin/requests/special?month=${selectedMonth}`);
       if (!res.ok) throw new Error("Failed to fetch requests");
       return res.json();
     },
+    refetchInterval: 15000,
   });
 
-  // Get comments for selected request
-  const { data: comments = [], refetch: refetchComments } = useQuery({
-    queryKey: ["admin-request-comments", selectedRequest?.id],
+  // Fetch comments
+  const { data: comments = [], refetch: refetchComments, isLoading: commentsLoading } = useQuery({
+    queryKey: ["admin-request-comments", selectedRequestId],
     queryFn: async () => {
-      if (!selectedRequest?.id) return [];
-      const res = await apiRequest(
-        "GET",
-        `/api/requests/special/${selectedRequest.id}/comments`
-      );
+      if (!selectedRequestId) return [];
+      const res = await apiRequest("GET", `/api/requests/special/${selectedRequestId}/comments`);
       if (!res.ok) return [];
       return res.json();
     },
-    enabled: !!selectedRequest?.id,
+    enabled: !!selectedRequestId,
+    refetchInterval: 5000,
   });
 
-  // Add response mutation
+  // Departments
+  const departments = useMemo(() => {
+    const depts = new Set<string>();
+    rawRequests.forEach((r: any) => {
+      if (r.user?.department) depts.add(r.user.department);
+    });
+    return Array.from(depts).sort();
+  }, [rawRequests]);
+
+  // Filtered & Sorted
+  const filteredRequests = useMemo(() => {
+    let filtered = [...rawRequests];
+
+    if (selectedStatus !== "all") {
+      filtered = filtered.filter((r: any) => r.status === selectedStatus);
+    }
+
+    if (selectedDepartment !== "all") {
+      filtered = filtered.filter((r: any) => r.user?.department === selectedDepartment);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter((r: any) => 
+        r.title.toLowerCase().includes(q) ||
+        r.details.toLowerCase().includes(q) ||
+        `${r.user?.firstName} ${r.user?.lastName}`.toLowerCase().includes(q)
+      );
+    }
+
+    filtered.sort((a: any, b: any) => {
+      if (sortBy === "newest") return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+
+    return filtered;
+  }, [rawRequests, selectedStatus, selectedDepartment, searchQuery, sortBy]);
+
+  const selectedRequest = filteredRequests.find((r: any) => r.id === selectedRequestId);
+
+  // Stats
+  const stats = useMemo(() => ({
+    total: rawRequests.length,
+    pending: rawRequests.filter((r: any) => r.status === "sent_for_approval").length,
+    approved: rawRequests.filter((r: any) => r.status === "approved").length,
+    rejected: rawRequests.filter((r: any) => r.status === "not_approved").length,
+    revision: rawRequests.filter((r: any) => r.status === "revision").length,
+  }), [rawRequests]);
+
+  // Mutations
   const respondMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedRequest?.id) throw new Error("No request selected");
-      const res = await apiRequest(
-        "POST",
-        `/api/requests/special/${selectedRequest.id}/comments`,
-        {
-          comment: responseComment,
-          statusChange: responseStatus || undefined,
-        }
-      );
+      if (!selectedRequestId) throw new Error("No request selected");
+      const actualStatus = responseStatus && responseStatus !== "no_change" ? responseStatus : undefined;
+      const res = await apiRequest("POST", `/api/requests/special/${selectedRequestId}/comments`, {
+        comment: responseComment,
+        statusChange: actualStatus,
+      });
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
     onSuccess: () => {
-      toast({
-        title: "Success",
-        description: "Response added successfully!",
-      });
+      toast({ title: "Sent!", description: "Your response has been delivered." });
       setResponseComment("");
       setResponseStatus("");
       refetchComments();
-      refetch();
+      refetchRequests();
     },
-    onError: (error) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to add response",
-        variant: "destructive",
-      });
+    onError: (error: any) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
-  const handleViewRequest = (request: any) => {
-    setSelectedRequest(request);
-    setIsDetailsOpen(true);
+  const quickActionMutation = useMutation({
+    mutationFn: async ({ status, comment }: { status: string; comment: string }) => {
+      if (!selectedRequestId) throw new Error("No request selected");
+      const res = await apiRequest("POST", `/api/requests/special/${selectedRequestId}/comments`, {
+        comment,
+        statusChange: status,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      toast({ title: "Done!", description: `Request ${statusConfig[variables.status]?.shortLabel}.` });
+      refetchComments();
+      refetchRequests();
+    },
+    onError: (error: any) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Auto-select
+  useEffect(() => {
+    if (filteredRequests.length > 0 && (!selectedRequestId || !filteredRequests.find((r: any) => r.id === selectedRequestId))) {
+      setSelectedRequestId(filteredRequests[0].id);
+    }
+  }, [filteredRequests, selectedRequestId]);
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setSelectedDepartment("all");
+    setSelectedStatus("all");
   };
 
-  const pendingCount = requests.filter((r: any) => r.status === "sent_for_approval").length;
-  const approvedCount = requests.filter((r: any) => r.status === "approved").length;
-  const rejectedCount = requests.filter((r: any) => r.status === "not_approved").length;
-  const revisionCount = requests.filter((r: any) => r.status === "revision").length;
+  const hasActiveFilters = searchQuery || selectedDepartment !== "all" || selectedStatus !== "all";
+
+  // Loading
+  if (isLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground">Loading requests...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex-1 p-8">
-      <div className="space-y-6">
-        {/* Header */}
-        <div>
-          <h1 className="text-3xl font-bold">Special Requests</h1>
-          <p className="text-muted-foreground mt-2">
-            Manage employee special requests, leave applications, and other requests.
-          </p>
+    <div className="h-full flex flex-col gap-3 p-1">
+      {/* Compact Filter Bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Status Pills */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <StatPill
+            label="All"
+            value={stats.total}
+            dotColor="bg-slate-400"
+            isActive={selectedStatus === "all"}
+            onClick={() => setSelectedStatus("all")}
+          />
+          <StatPill
+            label="Pending"
+            value={stats.pending}
+            dotColor="bg-blue-500"
+            isActive={selectedStatus === "sent_for_approval"}
+            onClick={() => setSelectedStatus("sent_for_approval")}
+          />
+          <StatPill
+            label="Approved"
+            value={stats.approved}
+            dotColor="bg-emerald-500"
+            isActive={selectedStatus === "approved"}
+            onClick={() => setSelectedStatus("approved")}
+          />
+          <StatPill
+            label="Rejected"
+            value={stats.rejected}
+            dotColor="bg-red-500"
+            isActive={selectedStatus === "not_approved"}
+            onClick={() => setSelectedStatus("not_approved")}
+          />
+          <StatPill
+            label="Revision"
+            value={stats.revision}
+            dotColor="bg-amber-500"
+            isActive={selectedStatus === "revision"}
+            onClick={() => setSelectedStatus("revision")}
+          />
         </div>
 
-        {/* Stats */}
-        <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Pending</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold text-blue-600">{pendingCount}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Approved</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold text-green-600">{approvedCount}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Rejected</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold text-red-600">{rejectedCount}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">In Revision</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold text-yellow-600">{revisionCount}</p>
-            </CardContent>
-          </Card>
+        <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+        {/* Search */}
+        <div className="relative flex-1 min-w-[180px] max-w-[260px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+          <Input
+            placeholder="Search..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-8 pl-8 text-xs bg-slate-50 dark:bg-slate-800/50 border-0"
+          />
         </div>
 
-        {/* Filters */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Filter Requests</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="space-y-2">
-                <Label htmlFor="month">Select Month</Label>
-                <Input
-                  id="month"
-                  type="month"
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
-                />
+        {/* Department */}
+        <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
+          <SelectTrigger className="h-8 w-[140px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0">
+            <Building2 className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue placeholder="Department" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Depts</SelectItem>
+            {departments.map((dept) => (
+              <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Month */}
+        <Input
+          type="month"
+          value={selectedMonth}
+          onChange={(e) => setSelectedMonth(e.target.value)}
+          className="h-8 w-[130px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0"
+        />
+
+        {/* Actions */}
+        <div className="flex items-center gap-1 ml-auto">
+          {hasActiveFilters && (
+            <Button variant="ghost" size="sm" onClick={clearFilters} className="h-8 text-xs">
+              Clear
+            </Button>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetchRequests()}>
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+
+      {/* Main Content - Maximum Space */}
+      <div className="flex-1 min-h-0">
+        {filteredRequests.length === 0 ? (
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-4">
+                <FileText className="w-6 h-6 text-slate-400" />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="status">Status</Label>
-                <Select value={selectedStatus} onValueChange={setSelectedStatus}>
-                  <SelectTrigger id="status">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="sent_for_approval">Pending Approval</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="not_approved">Rejected</SelectItem>
-                    <SelectItem value="revision">In Revision</SelectItem>
-                    <SelectItem value="resolved">Resolved</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              <p className="font-medium text-slate-900 dark:text-white mb-1">No requests found</p>
+              <p className="text-sm text-slate-500">
+                {hasActiveFilters ? "Try adjusting your filters" : "No requests for this period"}
+              </p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        ) : (
+          <div className="h-full grid grid-cols-12 gap-3">
+            {/* Request List - Compact */}
+            <div className="col-span-12 lg:col-span-4 xl:col-span-3 min-h-0">
+              <Card className="h-full flex flex-col overflow-hidden border-0 shadow-sm bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl">
+                <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-800 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-slate-500">
+                      {filteredRequests.length} request{filteredRequests.length !== 1 ? "s" : ""}
+                    </span>
+                    <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
+                      <SelectTrigger className="h-6 w-20 text-[10px] border-0 bg-transparent p-0 gap-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="newest">Newest</SelectItem>
+                        <SelectItem value="oldest">Oldest</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <ScrollArea className="flex-1">
+                  <div className="p-2 space-y-1">
+                    {filteredRequests.map((request: any) => (
+                      <RequestItem
+                        key={request.id}
+                        request={request}
+                        isSelected={selectedRequestId === request.id}
+                        onClick={() => setSelectedRequestId(request.id)}
+                      />
+                    ))}
+                  </div>
+                </ScrollArea>
+              </Card>
+            </div>
 
-        {/* Requests List */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5" />
-              Requests ({requests.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <div className="text-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-primary mx-auto mb-2" />
-                <p className="text-muted-foreground">Loading requests...</p>
-              </div>
-            ) : requests.length === 0 ? (
-              <Alert>
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  No requests found with status "{selectedStatus.replace(/_/g, " ")}" for {selectedMonth}
-                </AlertDescription>
-              </Alert>
-            ) : (
-              <div className="space-y-3">
-                {requests.map((request: any) => (
-                  <div
-                    key={request.id}
-                    className="flex items-start justify-between p-4 border rounded-lg hover:bg-accent transition-colors"
-                  >
-                    <div className="flex-1">
-                      <h3 className="font-semibold">{request.title}</h3>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        <span className="font-medium">
-                          {request.user.firstName} {request.user.lastName}
-                        </span>
-                        {" • "}
-                        {request.user.department}
-                      </p>
-                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                        {request.details}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        {new Date(request.createdAt).toLocaleDateString()}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 ml-4">
-                      <Badge className={statusColors[request.status]}>
-                        {request.status.replace(/_/g, " ").toUpperCase()}
-                      </Badge>
-                      <Dialog open={isDetailsOpen && selectedRequest?.id === request.id} onOpenChange={setIsDetailsOpen}>
-                        <DialogTrigger asChild>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleViewRequest(request)}
-                          >
-                            View
-                          </Button>
-                        </DialogTrigger>
-                        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-                          <DialogHeader>
-                            <DialogTitle>{selectedRequest?.title}</DialogTitle>
-                          </DialogHeader>
-                          {selectedRequest && (
-                            <div className="space-y-6">
-                              {/* Request Info */}
-                              <div className="grid grid-cols-2 gap-4 pb-4 border-b">
-                                <div>
-                                  <p className="text-sm text-muted-foreground">Employee</p>
-                                  <p className="font-semibold">
-                                    {selectedRequest.user.firstName} {selectedRequest.user.lastName}
-                                  </p>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-muted-foreground">Department</p>
-                                  <p className="font-semibold">{selectedRequest.user.department}</p>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-muted-foreground">Status</p>
-                                  <Badge className={statusColors[selectedRequest.status]}>
-                                    {selectedRequest.status.replace(/_/g, " ").toUpperCase()}
-                                  </Badge>
-                                </div>
-                                <div>
-                                  <p className="text-sm text-muted-foreground">Submitted</p>
-                                  <p className="font-semibold text-sm">
-                                    {new Date(selectedRequest.createdAt).toLocaleDateString()}
-                                  </p>
-                                </div>
-                              </div>
+            {/* Conversation Panel - Maximum Space */}
+            <div className="col-span-12 lg:col-span-8 xl:col-span-9 min-h-0">
+              {selectedRequest ? (
+                <Card className="h-full flex flex-col overflow-hidden border-0 shadow-sm bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl">
+                  {/* Header - Compact */}
+                  <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 shrink-0">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Avatar className="h-10 w-10 shrink-0">
+                          <AvatarFallback className={cn(
+                            "text-xs font-bold text-white bg-gradient-to-br",
+                            getAvatarGradient(selectedRequest.user?.firstName || "")
+                          )}>
+                            {getInitials(selectedRequest.user?.firstName || "", selectedRequest.user?.lastName || "")}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-semibold text-slate-900 dark:text-white truncate">
+                              {selectedRequest.title}
+                            </h3>
+                            {(() => {
+                              const config = statusConfig[selectedRequest.status];
+                              return (
+                                <Badge variant="secondary" className={cn("text-[10px] font-medium shrink-0", config.color)}>
+                                  <Circle className="w-1.5 h-1.5 mr-1 fill-current" />
+                                  {config.shortLabel}
+                                </Badge>
+                              );
+                            })()}
+                          </div>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {selectedRequest.user?.firstName} {selectedRequest.user?.lastName}
+                            {selectedRequest.user?.department && ` • ${selectedRequest.user.department}`}
+                            {" • "}
+                            {format(new Date(selectedRequest.createdAt), "MMM d, h:mm a")}
+                          </p>
+                        </div>
+                      </div>
 
-                              {/* Details */}
-                              <div>
-                                <h3 className="font-semibold mb-2">Request Details</h3>
-                                <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded-lg">
-                                  <p className="text-sm whitespace-pre-wrap">{selectedRequest.details}</p>
-                                </div>
-                              </div>
-
-                              {/* Comments */}
-                              <div>
-                                <h3 className="font-semibold mb-3">Conversation Thread</h3>
-                                <div className="space-y-3 max-h-64 overflow-y-auto mb-4">
-                                  {comments.length === 0 ? (
-                                    <p className="text-sm text-muted-foreground text-center py-4">
-                                      No comments yet
-                                    </p>
-                                  ) : (
-                                    comments.map((comment: any) => (
-                                      <div
-                                        key={comment.id}
-                                        className={`p-3 rounded-lg text-sm ${
-                                          comment.isAdminComment
-                                            ? "bg-blue-50 dark:bg-blue-950 border-l-4 border-blue-500"
-                                            : "bg-gray-50 dark:bg-gray-900"
-                                        }`}
-                                      >
-                                        <p className="font-semibold text-xs mb-1">
-                                          {comment.isAdminComment ? "Admin" : "Employee"}
-                                        </p>
-                                        <p className="whitespace-pre-wrap">{comment.comment}</p>
-                                        {comment.statusChange && (
-                                          <p className="text-xs text-muted-foreground mt-2">
-                                            Status changed to: {comment.statusChange}
-                                          </p>
-                                        )}
-                                      </div>
-                                    ))
-                                  )}
-                                </div>
-                              </div>
-
-                              {/* Admin Response */}
-                              <div className="pt-4 border-t space-y-3">
-                                <h3 className="font-semibold">Add Response</h3>
-                                <Textarea
-                                  value={responseComment}
-                                  onChange={(e) => setResponseComment(e.target.value)}
-                                  placeholder="Type your response or revision request..."
-                                  rows={3}
-                                />
-                                <div className="space-y-2">
-                                  <Label className="text-sm">Change Status (Optional)</Label>
-                                  <Select value={responseStatus} onValueChange={setResponseStatus}>
-                                    <SelectTrigger>
-                                      <SelectValue placeholder="Keep current status" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="approved">Approve</SelectItem>
-                                      <SelectItem value="not_approved">Reject</SelectItem>
-                                      <SelectItem value="revision">Request Revision</SelectItem>
-                                      <SelectItem value="resolved">Mark Resolved</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <Button
-                                  onClick={() => respondMutation.mutate()}
-                                  disabled={respondMutation.isPending || !responseComment.trim()}
-                                  className="w-full"
-                                >
-                                  {respondMutation.isPending ? "Sending..." : "Send Response"}
-                                </Button>
-                              </div>
-                            </div>
-                          )}
-                        </DialogContent>
-                      </Dialog>
+                      {/* Quick Actions */}
+                      {selectedRequest.status === "sent_for_approval" && (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                className="h-8 px-3 bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm"
+                                onClick={() => quickActionMutation.mutate({
+                                  status: "approved",
+                                  comment: "Your request has been approved. ✓"
+                                })}
+                                disabled={quickActionMutation.isPending}
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Approve</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                className="h-8 px-3 shadow-sm"
+                                onClick={() => quickActionMutation.mutate({
+                                  status: "not_approved",
+                                  comment: "Your request has been rejected."
+                                })}
+                                disabled={quickActionMutation.isPending}
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Reject</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 px-3 border-amber-300 text-amber-600 hover:bg-amber-50"
+                                onClick={() => quickActionMutation.mutate({
+                                  status: "revision",
+                                  comment: "Please provide more details."
+                                })}
+                                disabled={quickActionMutation.isPending}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Request Revision</TooltipContent>
+                          </Tooltip>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => quickActionMutation.mutate({
+                                status: "resolved",
+                                comment: "This request has been resolved."
+                              })}>
+                                <CheckCircle2 className="h-4 w-4 mr-2" />
+                                Mark Resolved
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+
+                  {/* Messages - Maximum Space */}
+                  <ScrollArea className="flex-1">
+                    <div className="p-4 space-y-4">
+                      {/* Original Request */}
+                      <div className="flex gap-3">
+                        <Avatar className="h-7 w-7 shrink-0">
+                          <AvatarFallback className={cn(
+                            "text-[10px] font-bold text-white bg-gradient-to-br",
+                            getAvatarGradient(selectedRequest.user?.firstName || "")
+                          )}>
+                            {getInitials(selectedRequest.user?.firstName || "", selectedRequest.user?.lastName || "")}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-medium text-slate-900 dark:text-white">
+                              {selectedRequest.user?.firstName} {selectedRequest.user?.lastName}
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              {format(new Date(selectedRequest.createdAt), "h:mm a")}
+                            </span>
+                          </div>
+                          <div className="bg-slate-100 dark:bg-slate-800 rounded-2xl rounded-tl-md px-4 py-3">
+                            <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
+                              {selectedRequest.details}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Comments */}
+                      {commentsLoading ? (
+                        <div className="flex justify-center py-8">
+                          <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+                        </div>
+                      ) : comments.length === 0 ? (
+                        <div className="text-center py-8">
+                          <Sparkles className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
+                          <p className="text-xs text-slate-400">Be the first to respond</p>
+                        </div>
+                      ) : (
+                        comments.map((comment: any) => (
+                          <div key={comment.id} className={cn("flex gap-3", comment.isAdminComment && "flex-row-reverse")}>
+                            <Avatar className="h-7 w-7 shrink-0">
+                              <AvatarFallback className={cn(
+                                "text-[10px] font-bold",
+                                comment.isAdminComment 
+                                  ? "bg-gradient-to-br from-indigo-500 to-purple-500 text-white" 
+                                  : cn("text-white bg-gradient-to-br", getAvatarGradient(comment.user?.firstName || ""))
+                              )}>
+                                {comment.isAdminComment ? "AD" : getInitials(comment.user?.firstName || "", comment.user?.lastName || "")}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className={cn("flex-1 min-w-0", comment.isAdminComment && "flex flex-col items-end")}>
+                              <div className={cn("flex items-center gap-2 mb-1", comment.isAdminComment && "flex-row-reverse")}>
+                                <span className="text-xs font-medium text-slate-900 dark:text-white">
+                                  {comment.isAdminComment ? "You" : `${comment.user?.firstName} ${comment.user?.lastName}`}
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  {format(new Date(comment.createdAt), "MMM d, h:mm a")}
+                                </span>
+                              </div>
+                              <div className={cn(
+                                "rounded-2xl px-4 py-3 max-w-[85%]",
+                                comment.isAdminComment
+                                  ? "rounded-tr-md bg-gradient-to-br from-indigo-500 to-purple-500 text-white"
+                                  : "rounded-tl-md bg-slate-100 dark:bg-slate-800"
+                              )}>
+                                <p className={cn(
+                                  "text-sm whitespace-pre-wrap leading-relaxed",
+                                  comment.isAdminComment ? "text-white" : "text-slate-700 dark:text-slate-300"
+                                )}>
+                                  {comment.comment}
+                                </p>
+                                
+                                {comment.statusChange && (
+                                  <div className={cn(
+                                    "mt-2 pt-2 border-t flex items-center gap-1.5",
+                                    comment.isAdminComment ? "border-white/20" : "border-slate-200 dark:border-slate-700"
+                                  )}>
+                                    {(() => {
+                                      const config = statusConfig[comment.statusChange];
+                                      const Icon = config?.icon || Circle;
+                                      return (
+                                        <>
+                                          <Icon className="h-3 w-3" />
+                                          <span className="text-[10px] font-medium">
+                                            {config?.label || comment.statusChange}
+                                          </span>
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </ScrollArea>
+
+                  {/* Response Input - Compact */}
+                  <div className="p-3 border-t border-slate-100 dark:border-slate-800 shrink-0 bg-slate-50/50 dark:bg-slate-800/30">
+                    {selectedRequest.status === "resolved" ? (
+                      <div className="flex items-center justify-center gap-2 py-2 text-sm text-slate-500">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Request resolved
+                      </div>
+                    ) : (
+                      <div className="flex items-end gap-2">
+                        <div className="flex-1 relative">
+                          <Textarea
+                            value={responseComment}
+                            onChange={(e) => setResponseComment(e.target.value)}
+                            placeholder="Type your response..."
+                            rows={1}
+                            className="min-h-[40px] max-h-[120px] resize-none pr-24 text-sm bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey && responseComment.trim()) {
+                                e.preventDefault();
+                                respondMutation.mutate();
+                              }
+                            }}
+                          />
+                          <div className="absolute right-2 bottom-2 flex items-center gap-1">
+                            <Select value={responseStatus} onValueChange={setResponseStatus}>
+                              <SelectTrigger className="h-6 w-6 p-0 border-0 bg-transparent">
+                                <SlidersHorizontal className="h-3.5 w-3.5 text-slate-400" />
+                              </SelectTrigger>
+                              <SelectContent align="end">
+                                <SelectItem value="no_change">No status change</SelectItem>
+                                <SelectItem value="approved">
+                                  <span className="flex items-center gap-2">
+                                    <Circle className="h-2 w-2 fill-emerald-500 text-emerald-500" />
+                                    Approve
+                                  </span>
+                                </SelectItem>
+                                <SelectItem value="not_approved">
+                                  <span className="flex items-center gap-2">
+                                    <Circle className="h-2 w-2 fill-red-500 text-red-500" />
+                                    Reject
+                                  </span>
+                                </SelectItem>
+                                <SelectItem value="revision">
+                                  <span className="flex items-center gap-2">
+                                    <Circle className="h-2 w-2 fill-amber-500 text-amber-500" />
+                                    Revision
+                                  </span>
+                                </SelectItem>
+                                <SelectItem value="resolved">
+                                  <span className="flex items-center gap-2">
+                                    <Circle className="h-2 w-2 fill-slate-500 text-slate-500" />
+                                    Resolved
+                                  </span>
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => respondMutation.mutate()}
+                          disabled={respondMutation.isPending || !responseComment.trim()}
+                          className="h-10 px-4 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white shadow-lg shadow-indigo-500/25"
+                        >
+                          {respondMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Send className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              ) : (
+                <Card className="h-full flex items-center justify-center border-0 shadow-sm bg-white/80 dark:bg-slate-900/80">
+                  <div className="text-center">
+                    <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3">
+                      <MessageSquare className="w-5 h-5 text-slate-400" />
+                    </div>
+                    <p className="text-sm text-slate-500">Select a request</p>
+                  </div>
+                </Card>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
