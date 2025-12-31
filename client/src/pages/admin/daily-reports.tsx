@@ -1,45 +1,38 @@
 // client/src/pages/admin/daily-reports.tsx
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
 import {
   FileText,
-  Calendar,
   Search,
+  Building2,
+  Calendar,
+  RefreshCw,
+  Eye,
   Video,
   Link2,
-  ChevronLeft,
-  ChevronRight,
-  Eye,
-  User,
   Clock,
+  User,
+  ChevronRight,
   ExternalLink,
-  FileCheck,
+  Sparkles,
   Filter,
-  Download,
-  MessageSquare,
+  X,
+  CheckCircle,
+  FileCheck,
+  Users,
+  TrendingUp,
+  BarChart3,
+  Loader2,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -47,438 +40,645 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
-import type { DailyShiftReport, SafeUser } from "@shared/schema";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
-type ReportWithUser = DailyShiftReport & { user: SafeUser };
+import { apiRequest } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
 
-// Helper function to safely parse JSON or return array from string
-function parseStringOrJson(value: string | null | undefined): string[] {
+// Safe JSON parse helper
+function safeParseArray(value: any): string[] {
   if (!value) return [];
-  
-  // If it's already an array (shouldn't happen but just in case)
   if (Array.isArray(value)) return value;
-  
-  // Try to parse as JSON first
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed)) return parsed;
-    // If parsed but not array, return as single item
-    return [String(parsed)];
-  } catch {
-    // Not valid JSON, treat as a single string/URL
-    // Split by newlines or commas if multiple URLs
-    const urls = value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-    return urls;
-  }
-}
-
-// Helper to check if string has content
-function hasContent(value: string | null | undefined): boolean {
-  if (!value) return false;
-  const items = parseStringOrJson(value);
-  return items.length > 0;
-}
-
-function getInitials(firstName: string, lastName: string) {
-  return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase() || "U";
-}
-
-export default function AdminDailyReportsPage() {
-  const [selectedMonth, setSelectedMonth] = useState(
-    new Date().toISOString().slice(0, 7)
-  );
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedReport, setSelectedReport] = useState<ReportWithUser | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-
-  // Generate month options (last 12 months)
-  const monthOptions = Array.from({ length: 12 }, (_, i) => {
-    const date = new Date();
-    date.setMonth(date.getMonth() - i);
-    return {
-      value: date.toISOString().slice(0, 7),
-      label: format(date, "MMMM yyyy"),
-    };
-  });
-
-  const { data: reports, isLoading } = useQuery<ReportWithUser[]>({
-    queryKey: ["/api/admin/reports/daily", selectedMonth],
-    queryFn: async () => {
-      const res = await fetch(`/api/admin/reports/daily?month=${selectedMonth}`);
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.error || "Failed to fetch reports");
-      }
-      return res.json();
-    },
-    enabled: !!selectedMonth,
-  });
-
-  const filteredReports = reports?.filter((report) => {
-    const fullName = `${report.user?.firstName} ${report.user?.lastName}`.toLowerCase();
-    const username = report.user?.username?.toLowerCase() || "";
-    const workDetails = report.workDetails?.toLowerCase() || "";
-    const query = searchQuery.toLowerCase();
-    
-    return (
-      fullName.includes(query) ||
-      username.includes(query) ||
-      workDetails.includes(query)
-    );
-  });
-
-  const handlePrevMonth = () => {
-    const date = new Date(selectedMonth + "-01");
-    date.setMonth(date.getMonth() - 1);
-    setSelectedMonth(date.toISOString().slice(0, 7));
-  };
-
-  const handleNextMonth = () => {
-    const date = new Date(selectedMonth + "-01");
-    date.setMonth(date.getMonth() + 1);
-    const now = new Date();
-    if (date <= now) {
-      setSelectedMonth(date.toISOString().slice(0, 7));
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+      return [value];
+    } catch {
+      if (value.trim()) return [value];
+      return [];
     }
-  };
+  }
+  return [];
+}
 
-  const openReportDetails = (report: ReportWithUser) => {
-    setSelectedReport(report);
-    setDetailsOpen(true);
-  };
+// Generate month options
+function getMonthOptions() {
+  const options = [];
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    options.push({
+      value: format(date, "yyyy-MM"),
+      label: format(date, "MMMM yyyy"),
+    });
+  }
+  return options;
+}
 
+// Helpers
+function getInitials(firstName: string, lastName: string) {
+  return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase() || "?";
+}
+
+function getAvatarGradient(name: string) {
+  const gradients = [
+    "from-violet-500 to-purple-600",
+    "from-blue-500 to-cyan-500",
+    "from-emerald-500 to-teal-500",
+    "from-orange-500 to-red-500",
+    "from-pink-500 to-rose-500",
+    "from-indigo-500 to-blue-600",
+  ];
+  return gradients[(name?.charCodeAt(0) || 0) % gradients.length];
+}
+
+// Mini Stat Pill
+function StatPill({ 
+  icon: Icon, 
+  value, 
+  label, 
+  color 
+}: { 
+  icon: any; 
+  value: number; 
+  label: string; 
+  color: string;
+}) {
   return (
-    <ScrollArea className="h-full">
-      <div className="p-6 space-y-6">
-        {/* Header */}
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Daily Reports</h1>
-            <p className="text-muted-foreground text-sm">
-              View and manage employee daily shift reports
-            </p>
+    <div className={cn(
+      "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium",
+      "bg-white dark:bg-slate-800 shadow-sm"
+    )}>
+      <Icon className={cn("h-3.5 w-3.5", color)} />
+      <span className="font-bold text-slate-900 dark:text-white">{value}</span>
+      <span className="text-slate-500 hidden sm:inline">{label}</span>
+    </div>
+  );
+}
+
+// Report Card Component
+function ReportCard({ 
+  report, 
+  onClick 
+}: { 
+  report: any; 
+  onClick: () => void;
+}) {
+  const videos = safeParseArray(report.loomVideos);
+  const refs = safeParseArray(report.references);
+  const reportDate = parseISO(report.date);
+  
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group w-full text-left p-4 rounded-2xl transition-all duration-300",
+        "bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800",
+        "hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-slate-900/50",
+        "hover:-translate-y-1 hover:border-slate-200 dark:hover:border-slate-700"
+      )}
+    >
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <Avatar className="h-10 w-10 ring-2 ring-white dark:ring-slate-900 shadow-md shrink-0">
+          <AvatarFallback className={cn(
+            "text-xs font-bold text-white bg-gradient-to-br",
+            getAvatarGradient(report.user?.firstName || "")
+          )}>
+            {getInitials(report.user?.firstName || "", report.user?.lastName || "")}
+          </AvatarFallback>
+        </Avatar>
+        
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h3 className="font-semibold text-sm text-slate-900 dark:text-white truncate">
+                {report.user?.firstName} {report.user?.lastName}
+              </h3>
+              {report.user?.department && (
+                <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5">
+                  <Building2 className="h-2.5 w-2.5" />
+                  {report.user.department}
+                </p>
+              )}
+            </div>
+            <ChevronRight className="h-4 w-4 text-slate-300 group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0" />
           </div>
         </div>
+      </div>
 
-        {/* Filters */}
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-              {/* Month Navigation */}
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="icon" onClick={handlePrevMonth}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-                  <SelectTrigger className="w-[180px]">
-                    <Calendar className="h-4 w-4 mr-2" />
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {monthOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleNextMonth}
-                  disabled={selectedMonth >= new Date().toISOString().slice(0, 7)}
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
+      {/* Date Badge */}
+      <div className="flex items-center gap-2 mt-3">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800">
+          <Calendar className="h-3 w-3 text-slate-400" />
+          <span className="text-[10px] font-medium text-slate-600 dark:text-slate-400">
+            {format(reportDate, "EEE, MMM d")}
+          </span>
+        </div>
+        
+        {videos.length > 0 && (
+          <Badge variant="secondary" className="text-[9px] gap-1 px-1.5 py-0.5 bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400">
+            <Video className="h-2.5 w-2.5" />
+            {videos.length}
+          </Badge>
+        )}
+        
+        {refs.length > 0 && (
+          <Badge variant="secondary" className="text-[9px] gap-1 px-1.5 py-0.5 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+            <Link2 className="h-2.5 w-2.5" />
+            {refs.length}
+          </Badge>
+        )}
+      </div>
 
-              {/* Search */}
-              <div className="relative w-full sm:w-64">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search reports..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9"
-                />
+      {/* Preview */}
+      <p className="text-xs text-slate-500 dark:text-slate-400 mt-3 line-clamp-2 leading-relaxed">
+        {report.workDetails?.substring(0, 120)}...
+      </p>
+
+      {/* Footer */}
+      <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+        <span className="text-[10px] text-slate-400">
+          {format(new Date(report.createdAt), "h:mm a")}
+        </span>
+        <div className="flex items-center gap-1 text-[10px] text-primary font-medium opacity-0 group-hover:opacity-100 transition-opacity">
+          View Details
+          <ChevronRight className="h-3 w-3" />
+        </div>
+      </div>
+    </button>
+  );
+}
+
+// Department Group Component
+function DepartmentGroup({ 
+  department, 
+  reports, 
+  onViewReport 
+}: { 
+  department: string; 
+  reports: any[]; 
+  onViewReport: (report: any) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {/* Department Header */}
+      <div className="flex items-center gap-2 sticky top-0 bg-slate-50/80 dark:bg-slate-950/80 backdrop-blur-sm py-2 z-10">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-slate-800 shadow-sm">
+          <Building2 className="h-3.5 w-3.5 text-primary" />
+          <span className="text-xs font-semibold text-slate-900 dark:text-white">
+            {department}
+          </span>
+          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 bg-primary/10 text-primary">
+            {reports.length}
+          </Badge>
+        </div>
+        <div className="flex-1 h-px bg-slate-200 dark:bg-slate-800" />
+      </div>
+
+      {/* Reports Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        {reports.map((report) => (
+          <ReportCard 
+            key={report.id} 
+            report={report} 
+            onClick={() => onViewReport(report)} 
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Main Component
+export default function AdminDailyReportsPage() {
+  const currentMonth = new Date().toISOString().substring(0, 7);
+  
+  // States
+  const [selectedMonth, setSelectedMonth] = useState(currentMonth);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [selectedDepartment, setSelectedDepartment] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [groupByDepartment, setGroupByDepartment] = useState(true);
+  const [selectedReport, setSelectedReport] = useState<any>(null);
+  const [viewDialogOpen, setViewDialogOpen] = useState(false);
+
+  // Fetch reports
+  const { data: reports = [], isLoading, refetch } = useQuery({
+    queryKey: ["admin-daily-reports", selectedMonth],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/admin/reports/daily?month=${selectedMonth}`);
+      if (!res.ok) throw new Error("Failed to fetch reports");
+      return res.json();
+    },
+  });
+
+  // Get unique departments
+  const departments = useMemo(() => {
+    const depts = new Set<string>();
+    reports.forEach((r: any) => {
+      if (r.user?.department) depts.add(r.user.department);
+    });
+    return Array.from(depts).sort();
+  }, [reports]);
+
+  // Get unique dates
+  const dates = useMemo(() => {
+    const dateSet = new Set<string>();
+    reports.forEach((r: any) => dateSet.add(r.date));
+    return Array.from(dateSet).sort().reverse();
+  }, [reports]);
+
+  // Filter reports
+  const filteredReports = useMemo(() => {
+    let filtered = [...reports];
+
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter((r: any) =>
+        `${r.user?.firstName} ${r.user?.lastName}`.toLowerCase().includes(query) ||
+        r.workDetails?.toLowerCase().includes(query) ||
+        r.user?.department?.toLowerCase().includes(query)
+      );
+    }
+
+    if (selectedDepartment !== "all") {
+      filtered = filtered.filter((r: any) => r.user?.department === selectedDepartment);
+    }
+
+    if (selectedDate) {
+      filtered = filtered.filter((r: any) => r.date === selectedDate);
+    }
+
+    return filtered.sort((a: any, b: any) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [reports, searchQuery, selectedDepartment, selectedDate]);
+
+  // Group by department
+  const groupedReports = useMemo(() => {
+    if (!groupByDepartment) return { "All Reports": filteredReports };
+    
+    const groups: Record<string, any[]> = {};
+    filteredReports.forEach((report: any) => {
+      const dept = report.user?.department || "Unassigned";
+      if (!groups[dept]) groups[dept] = [];
+      groups[dept].push(report);
+    });
+    return groups;
+  }, [filteredReports, groupByDepartment]);
+
+  // Stats
+  const stats = useMemo(() => {
+    const uniqueEmployees = new Set(reports.map((r: any) => r.userId)).size;
+    const withVideos = reports.filter((r: any) => safeParseArray(r.loomVideos).length > 0).length;
+    const withRefs = reports.filter((r: any) => safeParseArray(r.references).length > 0).length;
+    const todayReports = reports.filter((r: any) => 
+      r.date === new Date().toISOString().split("T")[0]
+    ).length;
+    
+    return { 
+      total: reports.length, 
+      uniqueEmployees, 
+      withVideos, 
+      withRefs,
+      todayReports 
+    };
+  }, [reports]);
+
+  const viewReport = (report: any) => {
+    setSelectedReport(report);
+    setViewDialogOpen(true);
+  };
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setSelectedDepartment("all");
+    setSelectedDate("");
+  };
+
+  const hasActiveFilters = searchQuery || selectedDepartment !== "all" || selectedDate;
+
+  if (isLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground">Loading reports...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col gap-3 p-2">
+      {/* Compact Filter Bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Stats Pills */}
+        <div className="flex items-center gap-1.5">
+          <StatPill icon={FileText} value={stats.total} label="Reports" color="text-slate-500" />
+          <StatPill icon={Users} value={stats.uniqueEmployees} label="Employees" color="text-blue-500" />
+          <StatPill icon={Video} value={stats.withVideos} label="Videos" color="text-red-500" />
+          <StatPill icon={CheckCircle} value={stats.todayReports} label="Today" color="text-emerald-500" />
+        </div>
+
+        <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+        {/* Search */}
+        <div className="relative flex-1 min-w-[160px] max-w-[220px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+          <Input
+            placeholder="Search reports..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-8 pl-8 text-xs bg-white dark:bg-slate-800 border-0 shadow-sm"
+          />
+        </div>
+
+        {/* Month Filter */}
+        <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+          <SelectTrigger className="h-8 w-[130px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
+            <Calendar className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {getMonthOptions().map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Date Filter */}
+        <Select value={selectedDate} onValueChange={setSelectedDate}>
+          <SelectTrigger className="h-8 w-[100px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
+            <SelectValue placeholder="All Days" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all_dates">All Days</SelectItem>
+            {dates.map((date) => (
+              <SelectItem key={date} value={date}>
+                {format(parseISO(date), "MMM d")}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Department Filter */}
+        <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
+          <SelectTrigger className="h-8 w-[130px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
+            <Building2 className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue placeholder="All Depts" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Depts</SelectItem>
+            {departments.map((dept) => (
+              <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Group Toggle */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={groupByDepartment ? "default" : "ghost"}
+              size="sm"
+              className="h-8 px-2"
+              onClick={() => setGroupByDepartment(!groupByDepartment)}
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {groupByDepartment ? "Show all" : "Group by department"}
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Actions */}
+        <div className="flex items-center gap-1 ml-auto">
+          {hasActiveFilters && (
+            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={clearFilters}>
+              <X className="h-3 w-3 mr-1" />
+              Clear
+            </Button>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()}>
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+
+      {/* Results Info */}
+      <div className="flex items-center justify-between px-1">
+        <p className="text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">{filteredReports.length}</span> reports
+          {selectedDate && selectedDate !== "all_dates" && (
+            <span> for {format(parseISO(selectedDate), "MMMM d, yyyy")}</span>
+          )}
+        </p>
+      </div>
+
+      {/* Reports Content */}
+      <ScrollArea className="flex-1 -mx-2 px-2">
+        {filteredReports.length === 0 ? (
+          <div className="h-full flex items-center justify-center py-20">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-4">
+                <FileText className="h-6 w-6 text-slate-400" />
               </div>
+              <p className="font-medium text-slate-900 dark:text-white mb-1">No reports found</p>
+              <p className="text-sm text-slate-500">
+                {hasActiveFilters ? "Try adjusting your filters" : "No reports for this period"}
+              </p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        ) : groupByDepartment ? (
+          <div className="space-y-6 pb-4">
+            {Object.entries(groupedReports)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([department, deptReports]) => (
+                <DepartmentGroup
+                  key={department}
+                  department={department}
+                  reports={deptReports}
+                  onViewReport={viewReport}
+                />
+              ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 pb-4">
+            {filteredReports.map((report: any) => (
+              <ReportCard
+                key={report.id}
+                report={report}
+                onClick={() => viewReport(report)}
+              />
+            ))}
+          </div>
+        )}
+      </ScrollArea>
 
-        {/* Reports Table */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              Reports ({filteredReports?.length || 0})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <div className="space-y-3">
-                {[...Array(5)].map((_, i) => (
-                  <div key={i} className="flex items-center gap-4">
-                    <Skeleton className="h-10 w-10 rounded-full" />
-                    <div className="space-y-2 flex-1">
-                      <Skeleton className="h-4 w-32" />
-                      <Skeleton className="h-3 w-48" />
-                    </div>
-                    <Skeleton className="h-8 w-20" />
-                  </div>
-                ))}
-              </div>
-            ) : filteredReports && filteredReports.length > 0 ? (
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Employee</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Work Summary</TableHead>
-                      <TableHead>Attachments</TableHead>
-                      <TableHead className="w-20">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredReports.map((report) => {
-                      const loomVideos = parseStringOrJson(report.loomVideos);
-                      const references = parseStringOrJson(report.references);
-                      
-                      return (
-                        <TableRow key={report.id}>
-                          <TableCell>
-                            <div className="flex items-center gap-3">
-                              <Avatar className="h-9 w-9">
-                                <AvatarFallback className="bg-primary/10 text-primary text-sm">
-                                  {getInitials(
-                                    report.user?.firstName || "",
-                                    report.user?.lastName || ""
-                                  )}
-                                </AvatarFallback>
-                              </Avatar>
-                              <div>
-                                <p className="font-medium">
-                                  {report.user?.firstName} {report.user?.lastName}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                  @{report.user?.username}
-                                </p>
-                              </div>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2 text-sm">
-                              <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                              {report.date
-                                ? format(new Date(report.date), "MMM dd, yyyy")
-                                : "N/A"}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <p className="text-sm line-clamp-2 max-w-xs">
-                              {report.workDetails || "No details provided"}
-                            </p>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex gap-1 flex-wrap">
-                              {loomVideos.length > 0 && (
-                                <Badge
-                                  variant="secondary"
-                                  className="text-xs gap-1"
-                                >
-                                  <Video className="h-3 w-3" />
-                                  {loomVideos.length}
-                                </Badge>
-                              )}
-                              {references.length > 0 && (
-                                <Badge
-                                  variant="secondary"
-                                  className="text-xs gap-1"
-                                >
-                                  <Link2 className="h-3 w-3" />
-                                  {references.length}
-                                </Badge>
-                              )}
-                              {report.notes && (
-                                <Badge
-                                  variant="secondary"
-                                  className="text-xs gap-1"
-                                >
-                                  <MessageSquare className="h-3 w-3" />
-                                </Badge>
-                              )}
-                              {loomVideos.length === 0 &&
-                                references.length === 0 &&
-                                !report.notes && (
-                                  <span className="text-xs text-muted-foreground">
-                                    None
-                                  </span>
-                                )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => openReportDetails(report)}
-                            >
-                              <Eye className="h-4 w-4 mr-1" />
-                              View
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <FileText className="h-12 w-12 mx-auto text-muted-foreground/50" />
-                <p className="mt-2 text-muted-foreground">
-                  {searchQuery
-                    ? "No reports found matching your search"
-                    : "No reports for this month"}
-                </p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Report Details Dialog */}
-        <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-          <DialogContent className="sm:max-w-2xl max-h-[90vh]">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <FileCheck className="h-5 w-5 text-primary" />
-                Daily Report Details
-              </DialogTitle>
-            </DialogHeader>
-            {selectedReport && (
-              <ScrollArea className="max-h-[70vh] pr-4">
-                <div className="space-y-6">
-                  {/* Employee Info */}
-                  <div className="flex items-center gap-4 p-4 rounded-lg bg-slate-50 dark:bg-slate-900">
-                    <Avatar className="h-12 w-12">
-                      <AvatarFallback className="bg-primary/10 text-primary">
-                        {getInitials(
-                          selectedReport.user?.firstName || "",
-                          selectedReport.user?.lastName || ""
-                        )}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <p className="font-semibold">
-                        {selectedReport.user?.firstName}{" "}
-                        {selectedReport.user?.lastName}
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        @{selectedReport.user?.username} •{" "}
-                        {selectedReport.user?.department || "No Department"}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-medium">
-                        {selectedReport.date
-                          ? format(new Date(selectedReport.date), "MMMM dd, yyyy")
-                          : "N/A"}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {selectedReport.createdAt
-                          ? format(
-                              new Date(selectedReport.createdAt),
-                              "hh:mm a"
-                            )
-                          : ""}
-                      </p>
+      {/* View Report Dialog */}
+      <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+          {selectedReport && (
+            <>
+              <DialogHeader className="shrink-0">
+                <div className="flex items-start gap-4">
+                  <Avatar className="h-12 w-12 ring-2 ring-primary/20 shadow-md">
+                    <AvatarFallback className={cn(
+                      "text-sm font-bold text-white bg-gradient-to-br",
+                      getAvatarGradient(selectedReport.user?.firstName || "")
+                    )}>
+                      {getInitials(selectedReport.user?.firstName || "", selectedReport.user?.lastName || "")}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1">
+                    <DialogTitle className="text-lg">
+                      {selectedReport.user?.firstName} {selectedReport.user?.lastName}
+                    </DialogTitle>
+                    <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
+                      {selectedReport.user?.department && (
+                        <span className="flex items-center gap-1">
+                          <Building2 className="h-3.5 w-3.5" />
+                          {selectedReport.user.department}
+                        </span>
+                      )}
+                      <span className="flex items-center gap-1">
+                        <Calendar className="h-3.5 w-3.5" />
+                        {format(parseISO(selectedReport.date), "EEEE, MMMM d, yyyy")}
+                      </span>
                     </div>
                   </div>
+                </div>
+              </DialogHeader>
 
+              <ScrollArea className="flex-1 -mx-6 px-6">
+                <div className="space-y-6 py-4">
                   {/* Work Details */}
-                  <div className="space-y-2">
-                    <h4 className="text-sm font-semibold flex items-center gap-2">
-                      <FileText className="h-4 w-4 text-blue-500" />
+                  <div>
+                    <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-primary" />
                       Work Details
                     </h4>
-                    <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-900 text-sm whitespace-pre-wrap">
-                      {selectedReport.workDetails || "No details provided"}
+                    <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50">
+                      <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                        {selectedReport.workDetails}
+                      </p>
                     </div>
                   </div>
-
-                  {/* Loom Videos */}
-                  {hasContent(selectedReport.loomVideos) && (
-                    <div className="space-y-2">
-                      <h4 className="text-sm font-semibold flex items-center gap-2">
-                        <Video className="h-4 w-4 text-purple-500" />
-                        Loom Videos
-                      </h4>
-                      <div className="space-y-2">
-                        {parseStringOrJson(selectedReport.loomVideos).map(
-                          (url, index) => (
-                            <a
-                              key={index}
-                              href={url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-2 p-3 rounded-lg bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-950/50 transition-colors text-sm"
-                            >
-                              <Video className="h-4 w-4 flex-shrink-0" />
-                              <span className="truncate flex-1">{url}</span>
-                              <ExternalLink className="h-4 w-4 flex-shrink-0" />
-                            </a>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* References */}
-                  {hasContent(selectedReport.references) && (
-                    <div className="space-y-2">
-                      <h4 className="text-sm font-semibold flex items-center gap-2">
-                        <Link2 className="h-4 w-4 text-cyan-500" />
-                        References
-                      </h4>
-                      <div className="space-y-2">
-                        {parseStringOrJson(selectedReport.references).map(
-                          (url, index) => (
-                            <a
-                              key={index}
-                              href={url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-2 p-3 rounded-lg bg-cyan-50 dark:bg-cyan-950/30 text-cyan-700 dark:text-cyan-400 hover:bg-cyan-100 dark:hover:bg-cyan-950/50 transition-colors text-sm"
-                            >
-                              <Link2 className="h-4 w-4 flex-shrink-0" />
-                              <span className="truncate flex-1">{url}</span>
-                              <ExternalLink className="h-4 w-4 flex-shrink-0" />
-                            </a>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )}
 
                   {/* Notes */}
                   {selectedReport.notes && (
-                    <div className="space-y-2">
-                      <h4 className="text-sm font-semibold flex items-center gap-2">
-                        <MessageSquare className="h-4 w-4 text-amber-500" />
-                        Additional Notes
-                      </h4>
-                      <div className="p-4 rounded-lg bg-amber-50 dark:bg-amber-950/30 text-sm whitespace-pre-wrap">
-                        {selectedReport.notes}
+                    <div>
+                      <h4 className="text-sm font-semibold mb-2">Additional Notes</h4>
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50">
+                        <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                          {selectedReport.notes}
+                        </p>
                       </div>
                     </div>
                   )}
+
+                  {/* Videos */}
+                  {(() => {
+                    const videos = safeParseArray(selectedReport.loomVideos);
+                    if (videos.length === 0) return null;
+                    return (
+                      <div>
+                        <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                          <Video className="h-4 w-4 text-red-500" />
+                          Video Links ({videos.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {videos.map((video: string, i: number) => (
+                            <a
+                              key={i}
+                              href={video}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-2 p-3 rounded-xl bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors group"
+                            >
+                              <Video className="h-4 w-4 text-red-500 shrink-0" />
+                              <span className="text-sm text-red-700 dark:text-red-400 truncate flex-1">
+                                {video}
+                              </span>
+                              <ExternalLink className="h-3.5 w-3.5 text-red-400 group-hover:text-red-600 shrink-0" />
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* References */}
+                  {(() => {
+                    const refs = safeParseArray(selectedReport.references);
+                    if (refs.length === 0) return null;
+                    return (
+                      <div>
+                        <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                          <Link2 className="h-4 w-4 text-blue-500" />
+                          Reference Links ({refs.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {refs.map((ref: string, i: number) => (
+                            <a
+                              key={i}
+                              href={ref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-2 p-3 rounded-xl bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors group"
+                            >
+                              <Link2 className="h-4 w-4 text-blue-500 shrink-0" />
+                              <span className="text-sm text-blue-700 dark:text-blue-400 truncate flex-1">
+                                {ref}
+                              </span>
+                              <ExternalLink className="h-3.5 w-3.5 text-blue-400 group-hover:text-blue-600 shrink-0" />
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Metadata */}
+                  <Separator />
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      Submitted {format(new Date(selectedReport.createdAt), "MMM d, yyyy 'at' h:mm a")}
+                    </span>
+                  </div>
                 </div>
               </ScrollArea>
-            )}
-          </DialogContent>
-        </Dialog>
-      </div>
-    </ScrollArea>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

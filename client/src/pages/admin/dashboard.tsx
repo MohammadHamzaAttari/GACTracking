@@ -5,33 +5,22 @@ import { format } from "date-fns";
 import {
   Users,
   Clock,
-  UserCheck,
-  Coffee,
-  Sun,
-  Moon,
   Search,
-  Filter,
   RefreshCw,
   Activity,
-  TrendingUp,
-  Zap,
-  Timer,
-  Building2,
-  ChevronRight,
-  Circle,
-  Pause,
-  Play,
+  Coffee,
   LogIn,
   LogOut,
-  MoreHorizontal,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  Filter,
 } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -39,30 +28,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { Shift, SafeUser, Break } from "@shared/schema";
 
-interface DashboardStats {
-  totalEmployees: number;
-  activeWorking: number;
-  onBreak: number;
-  notStarted: number;
-}
+const DEPARTMENTS = ["Development", "Business Development", "Designing Team"];
 
 interface TodayShift extends Shift {
   user: SafeUser;
   breaks?: Break[];
+}
+
+type StatusType = "working" | "on_break" | "completed" | "not_started";
+
+interface StatusInfo {
+  type: StatusType;
+  label: string;
+  color: string;
+  bgColor: string;
 }
 
 // Helpers
@@ -70,44 +52,69 @@ function getInitials(firstName: string, lastName: string) {
   return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase() || "?";
 }
 
-function getAvatarGradient(name: string) {
-  const gradients = [
-    "from-violet-500 to-purple-600",
-    "from-blue-500 to-cyan-500",
-    "from-emerald-500 to-teal-500",
-    "from-orange-500 to-red-500",
-    "from-pink-500 to-rose-500",
-    "from-indigo-500 to-blue-600",
-    "from-amber-500 to-orange-500",
-    "from-cyan-500 to-blue-500",
+function getAvatarColor(name: string) {
+  const colors = [
+    "bg-blue-500",
+    "bg-emerald-500",
+    "bg-violet-500",
+    "bg-rose-500",
+    "bg-amber-500",
+    "bg-cyan-500",
   ];
-  const index = (name?.charCodeAt(0) || 0) % gradients.length;
-  return gradients[index];
+  return colors[(name?.charCodeAt(0) || 0) % colors.length];
 }
 
-function getEmployeeStatus(shift: TodayShift) {
-  const hasActiveBreak = shift.breaks?.some(b => !b.endTime);
-  
-  if (hasActiveBreak) {
-    return { status: "break", label: "On Break", color: "text-orange-500", bg: "bg-orange-500", dot: "bg-orange-500 animate-pulse" };
+function getStatus(shift: TodayShift | null): StatusInfo {
+  if (!shift) {
+    return { 
+      type: "not_started", 
+      label: "Not Started", 
+      color: "text-slate-400",
+      bgColor: "bg-slate-100 dark:bg-slate-800"
+    };
   }
-  
-  if (shift.eveningClockIn && !shift.eveningClockOut) {
-    return { status: "evening", label: "Evening Shift", color: "text-blue-500", bg: "bg-blue-500", dot: "bg-blue-500 animate-pulse" };
+
+  const activeBreak = shift.breaks?.some(b => !b.endTime);
+  if (activeBreak) {
+    return { 
+      type: "on_break", 
+      label: "On Break", 
+      color: "text-amber-600",
+      bgColor: "bg-amber-50 dark:bg-amber-950/50"
+    };
   }
-  
-  if (shift.morningClockIn && !shift.morningClockOut) {
-    return { status: "morning", label: "Morning Shift", color: "text-emerald-500", bg: "bg-emerald-500", dot: "bg-emerald-500 animate-pulse" };
+
+  const isWorking = (shift.morningClockIn && !shift.morningClockOut) || 
+                    (shift.eveningClockIn && !shift.eveningClockOut);
+  if (isWorking) {
+    return { 
+      type: "working", 
+      label: "Working", 
+      color: "text-emerald-600",
+      bgColor: "bg-emerald-50 dark:bg-emerald-950/50"
+    };
   }
-  
-  if (shift.eveningClockOut || shift.morningClockOut) {
-    return { status: "completed", label: "Completed", color: "text-slate-500", bg: "bg-slate-500", dot: "bg-slate-400" };
+
+  if (shift.morningClockOut || shift.eveningClockOut) {
+    return { 
+      type: "completed", 
+      label: "Completed", 
+      color: "text-blue-600",
+      bgColor: "bg-blue-50 dark:bg-blue-950/50"
+    };
   }
-  
-  return { status: "not_started", label: "Not Started", color: "text-slate-400", bg: "bg-slate-400", dot: "bg-slate-300" };
+
+  return { 
+    type: "not_started", 
+    label: "Not Started", 
+    color: "text-slate-400",
+    bgColor: "bg-slate-100 dark:bg-slate-800"
+  };
 }
 
-function calculateWorkTime(shift: TodayShift): string {
+function getWorkHours(shift: TodayShift | null): string {
+  if (!shift) return "—";
+  
   let totalMinutes = 0;
   
   if (shift.morningClockIn) {
@@ -122,30 +129,39 @@ function calculateWorkTime(shift: TodayShift): string {
     totalMinutes += Math.floor((end.getTime() - start.getTime()) / 60000);
   }
   
-  if (totalMinutes <= 0) return "-";
+  // Subtract break time
+  if (shift.breaks) {
+    shift.breaks.forEach(breakItem => {
+      if (breakItem.startTime) {
+        const breakStart = new Date(breakItem.startTime);
+        const breakEnd = breakItem.endTime ? new Date(breakItem.endTime) : new Date();
+        totalMinutes -= Math.floor((breakEnd.getTime() - breakStart.getTime()) / 60000);
+      }
+    });
+  }
+  
+  if (totalMinutes <= 0) return "—";
   
   const hours = Math.floor(totalMinutes / 60);
   const mins = totalMinutes % 60;
   return `${hours}h ${mins}m`;
 }
 
-function getActiveBreakType(shift: TodayShift): string | null {
-  const activeBreak = shift.breaks?.find(b => !b.endTime);
-  return activeBreak?.type || null;
+function formatTime(date: string | Date | null): string {
+  if (!date) return "—";
+  return format(new Date(date), "h:mm a");
 }
 
-// Mini Stat Component
-function MiniStat({ 
-  icon: Icon, 
-  value, 
+// Stat Card Component
+function StatCard({ 
   label, 
+  value, 
   color,
   active,
   onClick 
 }: { 
-  icon: any; 
-  value: number; 
   label: string; 
+  value: number; 
   color: string;
   active?: boolean;
   onClick?: () => void;
@@ -154,146 +170,231 @@ function MiniStat({
     <button
       onClick={onClick}
       className={cn(
-        "flex items-center gap-2 px-3 py-1.5 rounded-full transition-all text-xs font-medium",
-        "hover:scale-105 active:scale-95",
+        "flex flex-col items-center justify-center px-4 py-3 rounded-lg border transition-all min-w-[100px]",
         active 
-          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-lg" 
-          : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 shadow-sm hover:shadow-md"
+          ? "border-slate-900 dark:border-white bg-slate-900 dark:bg-white" 
+          : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600"
       )}
     >
-      <Icon className={cn("h-3.5 w-3.5", active ? "" : color)} />
-      <span className="font-bold">{value}</span>
-      <span className="hidden sm:inline opacity-70">{label}</span>
+      <span className={cn(
+        "text-2xl font-bold",
+        active ? "text-white dark:text-slate-900" : color
+      )}>
+        {value}
+      </span>
+      <span className={cn(
+        "text-xs mt-0.5",
+        active ? "text-slate-300 dark:text-slate-600" : "text-slate-500"
+      )}>
+        {label}
+      </span>
     </button>
   );
 }
 
-// Employee Card Component
-function EmployeeCard({ shift }: { shift: TodayShift }) {
-  const statusInfo = getEmployeeStatus(shift);
-  const workTime = calculateWorkTime(shift);
-  const activeBreakType = getActiveBreakType(shift);
-  const isActive = statusInfo.status === "morning" || statusInfo.status === "evening" || statusInfo.status === "break";
-  
+// Status Indicator
+function StatusIndicator({ status }: { status: StatusInfo }) {
   return (
     <div className={cn(
-      "group relative p-4 rounded-2xl transition-all duration-300",
-      "bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800",
-      "hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-slate-900/50",
-      "hover:-translate-y-1 hover:border-slate-200 dark:hover:border-slate-700",
-      isActive && "ring-2 ring-offset-2 ring-offset-background",
-      statusInfo.status === "morning" && "ring-emerald-500/50",
-      statusInfo.status === "evening" && "ring-blue-500/50",
-      statusInfo.status === "break" && "ring-orange-500/50",
+      "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium",
+      status.bgColor,
+      status.color
     )}>
-      {/* Status Indicator Line */}
-      <div className={cn(
-        "absolute top-0 left-4 right-4 h-1 rounded-b-full opacity-80",
-        statusInfo.bg
+      <Circle className={cn(
+        "h-2 w-2 fill-current",
+        status.type === "working" && "animate-pulse"
       )} />
-      
-      <div className="flex items-start gap-3 mt-1">
-        {/* Avatar with Status */}
-        <div className="relative">
-          <Avatar className="h-12 w-12 ring-2 ring-white dark:ring-slate-900 shadow-md">
-            <AvatarFallback className={cn(
-              "text-sm font-bold text-white bg-gradient-to-br",
-              getAvatarGradient(shift.user?.firstName || "")
-            )}>
-              {getInitials(shift.user?.firstName || "", shift.user?.lastName || "")}
+      {status.label}
+    </div>
+  );
+}
+
+// Employee Row Component
+function EmployeeRow({ 
+  employee, 
+  shift,
+  showDepartment = false 
+}: { 
+  employee: SafeUser; 
+  shift: TodayShift | null;
+  showDepartment?: boolean;
+}) {
+  const status = getStatus(shift);
+  const workHours = getWorkHours(shift);
+  const clockIn = shift?.morningClockIn || shift?.eveningClockIn;
+  const clockOut = shift?.morningClockOut || shift?.eveningClockOut;
+
+  return (
+    <tr className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+      {/* Employee */}
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-3">
+          <Avatar className="h-9 w-9">
+            <AvatarFallback className={cn("text-white text-xs font-medium", getAvatarColor(employee.firstName))}>
+              {getInitials(employee.firstName, employee.lastName)}
             </AvatarFallback>
           </Avatar>
-          <span className={cn(
-            "absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-white dark:border-slate-900",
-            statusInfo.dot
-          )} />
-        </div>
-        
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <h3 className="font-semibold text-sm text-slate-900 dark:text-white truncate">
-                {shift.user?.firstName} {shift.user?.lastName}
-              </h3>
-              <div className="flex items-center gap-1.5 mt-0.5">
-                {shift.user?.department && (
-                  <span className="text-[10px] text-slate-500 flex items-center gap-1">
-                    <Building2 className="h-2.5 w-2.5" />
-                    {shift.user.department}
-                  </span>
-                )}
-              </div>
-            </div>
-            
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem>View Profile</DropdownMenuItem>
-                <DropdownMenuItem>View Attendance</DropdownMenuItem>
-                <DropdownMenuItem>Send Message</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          
-          {/* Status Badge */}
-          <div className="flex items-center gap-2 mt-2">
-            <Badge 
-              variant="secondary" 
-              className={cn(
-                "text-[10px] font-semibold gap-1 px-2",
-                statusInfo.status === "morning" && "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
-                statusInfo.status === "evening" && "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400",
-                statusInfo.status === "break" && "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400",
-                statusInfo.status === "completed" && "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
-                statusInfo.status === "not_started" && "bg-slate-50 text-slate-400 dark:bg-slate-800/50 dark:text-slate-500",
-              )}
-            >
-              {statusInfo.status === "morning" && <Sun className="h-2.5 w-2.5" />}
-              {statusInfo.status === "evening" && <Moon className="h-2.5 w-2.5" />}
-              {statusInfo.status === "break" && <Coffee className="h-2.5 w-2.5" />}
-              {statusInfo.label}
-            </Badge>
-            
-            {activeBreakType && (
-              <span className="text-[10px] text-orange-600 dark:text-orange-400 capitalize">
-                {activeBreakType}
-              </span>
+          <div>
+            <p className="font-medium text-slate-900 dark:text-white text-sm">
+              {employee.firstName} {employee.lastName}
+            </p>
+            {showDepartment && employee.department && (
+              <p className="text-xs text-slate-500">{employee.department}</p>
             )}
           </div>
         </div>
-      </div>
-      
-      {/* Time Info */}
-      <div className="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
-        <div className="text-center">
-          <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">In</p>
-          <p className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
-            {shift.morningClockIn 
-              ? format(new Date(shift.morningClockIn), "h:mm a")
-              : "-"}
-          </p>
+      </td>
+
+      {/* Status */}
+      <td className="py-3 px-4">
+        <StatusIndicator status={status} />
+      </td>
+
+      {/* Clock In */}
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-2 text-sm">
+          <LogIn className="h-4 w-4 text-slate-400" />
+          <span className={clockIn ? "text-slate-700 dark:text-slate-300" : "text-slate-400"}>
+            {formatTime(clockIn)}
+          </span>
         </div>
-        <div className="text-center border-x border-slate-100 dark:border-slate-800">
-          <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Breaks</p>
-          <p className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
-            {shift.breaks?.length || 0}
-          </p>
+      </td>
+
+      {/* Clock Out */}
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-2 text-sm">
+          <LogOut className="h-4 w-4 text-slate-400" />
+          <span className={clockOut ? "text-slate-700 dark:text-slate-300" : "text-slate-400"}>
+            {formatTime(clockOut)}
+          </span>
         </div>
-        <div className="text-center">
-          <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Time</p>
-          <p className={cn(
-            "text-xs font-mono font-semibold",
-            isActive ? "text-emerald-600 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"
+      </td>
+
+      {/* Hours Worked */}
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-2 text-sm">
+          <Clock className="h-4 w-4 text-slate-400" />
+          <span className={cn(
+            "font-medium",
+            workHours !== "—" ? "text-slate-700 dark:text-slate-300" : "text-slate-400"
           )}>
-            {workTime}
-          </p>
+            {workHours}
+          </span>
         </div>
-      </div>
+      </td>
+
+      {/* Break Time */}
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-2 text-sm">
+          <Coffee className="h-4 w-4 text-slate-400" />
+          <span className="text-slate-500">
+            {shift?.breaks?.length ? `${shift.breaks.length} break${shift.breaks.length > 1 ? 's' : ''}` : "—"}
+          </span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// Department Section
+function DepartmentSection({
+  name,
+  employees,
+  isExpanded,
+  onToggle,
+}: {
+  name: string;
+  employees: { employee: SafeUser; shift: TodayShift | null }[];
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const stats = useMemo(() => {
+    let working = 0, onBreak = 0;
+    employees.forEach(({ shift }) => {
+      const status = getStatus(shift).type;
+      if (status === "working") working++;
+      if (status === "on_break") onBreak++;
+    });
+    return { working, onBreak, total: employees.length };
+  }, [employees]);
+
+  // Sort: working first, then on break, then completed, then not started
+  const sortedEmployees = useMemo(() => {
+    const order: Record<StatusType, number> = { working: 0, on_break: 1, completed: 2, not_started: 3 };
+    return [...employees].sort((a, b) => {
+      const statusA = getStatus(a.shift).type;
+      const statusB = getStatus(b.shift).type;
+      return order[statusA] - order[statusB];
+    });
+  }, [employees]);
+
+  if (employees.length === 0) return null;
+
+  return (
+    <div className="mb-6">
+      {/* Department Header */}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors mb-2"
+      >
+        <div className="flex items-center gap-3">
+          {isExpanded ? (
+            <ChevronDown className="h-5 w-5 text-slate-400" />
+          ) : (
+            <ChevronRight className="h-5 w-5 text-slate-400" />
+          )}
+          <h3 className="font-semibold text-slate-900 dark:text-white">{name}</h3>
+          <span className="text-sm text-slate-500">({stats.total})</span>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          {stats.working > 0 && (
+            <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400 hover:bg-emerald-100">
+              {stats.working} working
+            </Badge>
+          )}
+          {stats.onBreak > 0 && (
+            <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-400 hover:bg-amber-100">
+              {stats.onBreak} on break
+            </Badge>
+          )}
+        </div>
+      </button>
+
+      {/* Employees Table */}
+      {isExpanded && (
+        <div className="bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
+                <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Employee
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Status
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Clock In
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Clock Out
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Hours
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Breaks
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedEmployees.map(({ employee, shift }) => (
+                <EmployeeRow key={employee.id} employee={employee} shift={shift} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -301,221 +402,300 @@ function EmployeeCard({ shift }: { shift: TodayShift }) {
 // Main Dashboard
 export default function AdminDashboard() {
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedDepartment, setSelectedDepartment] = useState("all");
-  const [selectedStatus, setSelectedStatus] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [departmentFilter, setDepartmentFilter] = useState<string>("all");
+  const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set(DEPARTMENTS));
 
-  const { data: stats, isLoading: statsLoading } = useQuery<DashboardStats>({
-    queryKey: ["/api/admin/stats"],
+  // Fetch employees
+  const { data: allEmployees = [], isLoading: loadingEmployees } = useQuery<SafeUser[]>({
+    queryKey: ["/api/admin/employees"],
+    select: (data) => data.filter(emp => emp.role === "employee" && emp.status === "active"),
+  });
+
+  // Fetch today's shifts
+  const { data: todayShifts = [], isLoading: loadingShifts, refetch } = useQuery<TodayShift[]>({
+    queryKey: ["/api/admin/shifts/today"],
     refetchInterval: 30000,
   });
 
-  const { data: todayShifts = [], isLoading: shiftsLoading, refetch } = useQuery<TodayShift[]>({
-    queryKey: ["/api/admin/shifts/today"],
-    refetchInterval: 15000,
-  });
+  // Map shifts by user ID
+  const shiftMap = useMemo(() => {
+    const map = new Map<string, TodayShift>();
+    todayShifts.forEach(shift => map.set(shift.userId, shift));
+    return map;
+  }, [todayShifts]);
 
-  // Get unique departments
+  // Combine employees with their shifts
+  const employeesWithShifts = useMemo(() => {
+    return allEmployees.map(employee => ({
+      employee,
+      shift: shiftMap.get(employee.id) || null,
+    }));
+  }, [allEmployees, shiftMap]);
+
+  // Get all departments
   const departments = useMemo(() => {
-    const depts = new Set<string>();
-    todayShifts.forEach((shift) => {
-      if (shift.user?.department) depts.add(shift.user.department);
+    const depts = new Set<string>(DEPARTMENTS);
+    allEmployees.forEach(emp => {
+      if (emp.department) depts.add(emp.department);
     });
     return Array.from(depts).sort();
-  }, [todayShifts]);
+  }, [allEmployees]);
 
-  // Filter shifts
-  const filteredShifts = useMemo(() => {
-    let filtered = [...todayShifts];
-
-    // Search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter((shift) =>
-        `${shift.user?.firstName} ${shift.user?.lastName}`.toLowerCase().includes(query) ||
-        shift.user?.department?.toLowerCase().includes(query)
-      );
-    }
-
-    // Department filter
-    if (selectedDepartment !== "all") {
-      filtered = filtered.filter((shift) => shift.user?.department === selectedDepartment);
-    }
-
-    // Status filter
-    if (selectedStatus !== "all") {
-      filtered = filtered.filter((shift) => {
-        const status = getEmployeeStatus(shift).status;
-        if (selectedStatus === "active") return status === "morning" || status === "evening";
-        if (selectedStatus === "break") return status === "break";
-        if (selectedStatus === "completed") return status === "completed";
-        return true;
-      });
-    }
-
-    return filtered;
-  }, [todayShifts, searchQuery, selectedDepartment, selectedStatus]);
-
-  // Group by status for quick stats
-  const statusCounts = useMemo(() => {
-    let active = 0;
-    let onBreak = 0;
-    let completed = 0;
+  // Group by department
+  const byDepartment = useMemo(() => {
+    const groups: Record<string, typeof employeesWithShifts> = {};
+    departments.forEach(d => groups[d] = []);
     
-    todayShifts.forEach((shift) => {
-      const status = getEmployeeStatus(shift).status;
-      if (status === "morning" || status === "evening") active++;
-      else if (status === "break") onBreak++;
-      else if (status === "completed") completed++;
+    employeesWithShifts.forEach(item => {
+      const dept = item.employee.department || "Unassigned";
+      if (!groups[dept]) groups[dept] = [];
+      groups[dept].push(item);
     });
     
-    return { active, onBreak, completed };
-  }, [todayShifts]);
+    return groups;
+  }, [employeesWithShifts, departments]);
 
-  if (statsLoading || shiftsLoading) {
+  // Calculate stats
+  const stats = useMemo(() => {
+    let working = 0, onBreak = 0, completed = 0, notStarted = 0;
+    
+    employeesWithShifts.forEach(({ shift }) => {
+      const status = getStatus(shift).type;
+      if (status === "working") working++;
+      else if (status === "on_break") onBreak++;
+      else if (status === "completed") completed++;
+      else notStarted++;
+    });
+
+    return { 
+      total: allEmployees.length,
+      working, 
+      onBreak, 
+      completed, 
+      notStarted 
+    };
+  }, [employeesWithShifts, allEmployees]);
+
+  // Apply filters
+  const getFilteredEmployees = (employees: typeof employeesWithShifts) => {
+    return employees.filter(({ employee, shift }) => {
+      // Search filter
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        const fullName = `${employee.firstName} ${employee.lastName}`.toLowerCase();
+        if (!fullName.includes(query)) return false;
+      }
+
+      // Status filter
+      if (statusFilter !== "all") {
+        const status = getStatus(shift).type;
+        if (statusFilter === "working" && status !== "working") return false;
+        if (statusFilter === "on_break" && status !== "on_break") return false;
+        if (statusFilter === "completed" && status !== "completed") return false;
+        if (statusFilter === "not_started" && status !== "not_started") return false;
+      }
+
+      return true;
+    });
+  };
+
+  const toggleDepartment = (dept: string) => {
+    const newExpanded = new Set(expandedDepts);
+    if (newExpanded.has(dept)) {
+      newExpanded.delete(dept);
+    } else {
+      newExpanded.add(dept);
+    }
+    setExpandedDepts(newExpanded);
+  };
+
+  const isLoading = loadingEmployees || loadingShifts;
+
+  if (isLoading) {
     return (
       <div className="h-full flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-3 animate-pulse">
-            <Activity className="h-5 w-5 text-primary" />
-          </div>
-          <p className="text-sm text-muted-foreground">Loading dashboard...</p>
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="h-6 w-6 text-slate-400 animate-spin" />
+          <p className="text-sm text-slate-500">Loading dashboard...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col gap-3 p-2">
-      {/* Compact Header Bar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {/* Stats Pills */}
-        <div className="flex items-center gap-1.5">
-          <MiniStat
-            icon={Users}
-            value={stats?.totalEmployees || 0}
-            label="Total"
-            color="text-slate-500"
-            active={selectedStatus === "all"}
-            onClick={() => setSelectedStatus("all")}
-          />
-          <MiniStat
-            icon={Zap}
-            value={statusCounts.active}
-            label="Active"
-            color="text-emerald-500"
-            active={selectedStatus === "active"}
-            onClick={() => setSelectedStatus("active")}
-          />
-          <MiniStat
-            icon={Coffee}
-            value={statusCounts.onBreak}
-            label="Break"
-            color="text-orange-500"
-            active={selectedStatus === "break"}
-            onClick={() => setSelectedStatus("break")}
-          />
-          <MiniStat
-            icon={UserCheck}
-            value={statusCounts.completed}
-            label="Done"
-            color="text-blue-500"
-            active={selectedStatus === "completed"}
-            onClick={() => setSelectedStatus("completed")}
-          />
+    <div className="h-full flex flex-col bg-slate-50 dark:bg-slate-950">
+      {/* Header */}
+      <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-4">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h1 className="text-xl font-semibold text-slate-900 dark:text-white">
+              Staff Activity
+            </h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              {format(new Date(), "EEEE, MMMM d, yyyy")} • {format(new Date(), "h:mm a")}
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="gap-1.5 py-1">
+              <Activity className="h-3 w-3 text-emerald-500 animate-pulse" />
+              Live
+            </Badge>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
-        <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
-
-        {/* Search */}
-        <div className="relative flex-1 min-w-[160px] max-w-[220px]">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-          <Input
-            placeholder="Search staff..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 pl-8 text-xs bg-white dark:bg-slate-800 border-0 shadow-sm"
+        {/* Stats */}
+        <div className="flex items-center gap-3 overflow-x-auto pb-2">
+          <StatCard 
+            label="Total" 
+            value={stats.total} 
+            color="text-slate-700 dark:text-slate-300"
+            active={statusFilter === "all"}
+            onClick={() => setStatusFilter("all")}
+          />
+          <StatCard 
+            label="Working" 
+            value={stats.working} 
+            color="text-emerald-600"
+            active={statusFilter === "working"}
+            onClick={() => setStatusFilter("working")}
+          />
+          <StatCard 
+            label="On Break" 
+            value={stats.onBreak} 
+            color="text-amber-600"
+            active={statusFilter === "on_break"}
+            onClick={() => setStatusFilter("on_break")}
+          />
+          <StatCard 
+            label="Completed" 
+            value={stats.completed} 
+            color="text-blue-600"
+            active={statusFilter === "completed"}
+            onClick={() => setStatusFilter("completed")}
+          />
+          <StatCard 
+            label="Not Started" 
+            value={stats.notStarted} 
+            color="text-slate-400"
+            active={statusFilter === "not_started"}
+            onClick={() => setStatusFilter("not_started")}
           />
         </div>
+      </div>
 
-        {/* Department Filter */}
-        <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
-          <SelectTrigger className="h-8 w-[140px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
-            <Building2 className="h-3 w-3 mr-1.5 text-slate-400" />
-            <SelectValue placeholder="Department" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Depts</SelectItem>
-            {departments.map((dept) => (
-              <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* Filters Bar */}
+      <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3">
+        <div className="flex items-center gap-3">
+          {/* Search */}
+          <div className="relative flex-1 max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+            <Input
+              placeholder="Search employees..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700"
+            />
+          </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-1 ml-auto">
-          {(searchQuery || selectedDepartment !== "all" || selectedStatus !== "all") && (
+          {/* Department Filter */}
+          <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
+            <SelectTrigger className="w-[180px] bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+              <Filter className="h-4 w-4 mr-2 text-slate-400" />
+              <SelectValue placeholder="All Departments" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Departments</SelectItem>
+              {departments.map(dept => (
+                <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Quick Actions */}
+          <div className="ml-auto flex items-center gap-2">
             <Button 
               variant="ghost" 
-              size="sm" 
-              className="h-8 text-xs"
-              onClick={() => {
-                setSearchQuery("");
-                setSelectedDepartment("all");
-                setSelectedStatus("all");
-              }}
+              size="sm"
+              onClick={() => setExpandedDepts(new Set(departments))}
             >
-              Clear
+              Expand All
             </Button>
-          )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()}>
-                <RefreshCw className="h-3.5 w-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Refresh</TooltipContent>
-          </Tooltip>
-          <Badge variant="outline" className="text-[10px] font-normal hidden md:flex">
-            <Activity className="h-2.5 w-2.5 mr-1 text-emerald-500 animate-pulse" />
-            Live
-          </Badge>
+            <Button 
+              variant="ghost" 
+              size="sm"
+              onClick={() => setExpandedDepts(new Set())}
+            >
+              Collapse All
+            </Button>
+          </div>
         </div>
       </div>
 
-      {/* Results Count */}
-      <div className="flex items-center justify-between px-1">
-        <p className="text-xs text-muted-foreground">
-          Showing <span className="font-semibold text-foreground">{filteredShifts.length}</span> of {todayShifts.length} employees
-        </p>
-        <p className="text-[10px] text-muted-foreground hidden sm:block">
-          {format(new Date(), "EEEE, MMM d • h:mm a")}
-        </p>
-      </div>
+      {/* Main Content */}
+      <ScrollArea className="flex-1">
+        <div className="p-6">
+          {departmentFilter === "all" ? (
+            // Show all departments
+            departments.map(dept => {
+              const employees = byDepartment[dept] || [];
+              const filtered = getFilteredEmployees(employees);
+              
+              if (filtered.length === 0 && (searchQuery || statusFilter !== "all")) {
+                return null;
+              }
 
-      {/* Employee Cards Grid - Maximum Space */}
-      <ScrollArea className="flex-1 -mx-2 px-2">
-        {filteredShifts.length === 0 ? (
-          <div className="h-full flex items-center justify-center py-20">
-            <div className="text-center">
-              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-4">
-                <Users className="h-6 w-6 text-slate-400" />
-              </div>
-              <p className="font-medium text-slate-900 dark:text-white mb-1">No employees found</p>
+              return (
+                <DepartmentSection
+                  key={dept}
+                  name={dept}
+                  employees={filtered}
+                  isExpanded={expandedDepts.has(dept)}
+                  onToggle={() => toggleDepartment(dept)}
+                />
+              );
+            })
+          ) : (
+            // Show single department
+            <DepartmentSection
+              name={departmentFilter}
+              employees={getFilteredEmployees(byDepartment[departmentFilter] || [])}
+              isExpanded={true}
+              onToggle={() => {}}
+            />
+          )}
+
+          {/* Empty State */}
+          {employeesWithShifts.length === 0 && (
+            <div className="text-center py-16">
+              <Users className="h-12 w-12 text-slate-300 dark:text-slate-600 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-slate-900 dark:text-white mb-1">
+                No employees found
+              </h3>
               <p className="text-sm text-slate-500">
-                {searchQuery || selectedDepartment !== "all" || selectedStatus !== "all"
-                  ? "Try adjusting your filters"
-                  : "No one has clocked in yet today"}
+                Add employees to start tracking their activity.
               </p>
             </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 pb-4">
-            {filteredShifts.map((shift) => (
-              <EmployeeCard key={shift.id} shift={shift} />
-            ))}
-          </div>
-        )}
+          )}
+        </div>
       </ScrollArea>
+
+      {/* Footer */}
+      <div className="shrink-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-6 py-2">
+        <div className="flex items-center justify-between text-xs text-slate-500">
+          <span>
+            Showing {employeesWithShifts.length} employees across {departments.length} departments
+          </span>
+          <span>
+            Auto-refreshes every 30 seconds
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
