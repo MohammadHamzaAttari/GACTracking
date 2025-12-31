@@ -19,6 +19,15 @@ import { z } from "zod";
 
 const SALT_ROUNDS = 10;
 
+// ============= SHIFT CONFIGURATION =============
+const SHIFT_CONFIG = {
+  MORNING_START_HOUR: 8,      // 8 AM
+  MORNING_END_HOUR: 14,       // 2 PM
+  EVENING_START_HOUR: 14,     // 2 PM
+  EVENING_END_HOUR: 22,       // 10 PM
+  DAY_RESET_BUFFER_HOURS: 3,  // Hours after last shift to reset for new day
+};
+
 // Extend express-session types
 declare module "express-session" {
   interface SessionData {
@@ -117,6 +126,195 @@ function cleanEmployeeData(data: any): any {
   }
   
   return cleaned;
+}
+
+// ============= ENHANCED DAY MANAGEMENT HELPERS =============
+
+// Get today's date in local timezone
+function getTodayDate(): string {
+  const now = new Date();
+  return now.toISOString().split("T")[0];
+}
+
+// Check if a timestamp is from a specific date
+function isFromDate(timestamp: Date | string | null, dateStr: string): boolean {
+  if (!timestamp) return false;
+  const date = new Date(timestamp);
+  return date.toISOString().split("T")[0] === dateStr;
+}
+
+// Check if a timestamp is from today
+function isToday(timestamp: Date | string | null): boolean {
+  return isFromDate(timestamp, getTodayDate());
+}
+
+// Get current shift period based on time
+function getCurrentShiftPeriod(): "morning" | "evening" {
+  const hour = new Date().getHours();
+  return hour < SHIFT_CONFIG.EVENING_START_HOUR ? "morning" : "evening";
+}
+
+// Calculate the effective working date considering the 3-hour buffer after last shift
+async function getEffectiveWorkingDate(userId: string): Promise<{
+  workingDate: string;
+  isNewDay: boolean;
+  lastShiftInfo: {
+    date: string | null;
+    lastClockOut: Date | null;
+    hoursSinceLastClockOut: number | null;
+  };
+}> {
+  const now = new Date();
+  const today = getTodayDate();
+  
+  // Get the most recent shift for this user
+  const recentShifts = await storage.getShiftsByUser(userId, 2);
+  
+  if (!recentShifts || recentShifts.length === 0) {
+    // No previous shifts, use today
+    return {
+      workingDate: today,
+      isNewDay: true,
+      lastShiftInfo: { date: null, lastClockOut: null, hoursSinceLastClockOut: null }
+    };
+  }
+  
+  const lastShift = recentShifts[0];
+  
+  // Determine the last clock out time (prefer evening, fallback to morning)
+  const lastClockOut = lastShift.eveningClockOut || lastShift.morningClockOut;
+  
+  // If no clock out, shift is still active
+  if (!lastClockOut) {
+    // Check if the shift is from today or yesterday
+    const shiftDate = lastShift.date;
+    
+    // If shift date is today, use today
+    if (shiftDate === today) {
+      return {
+        workingDate: today,
+        isNewDay: false,
+        lastShiftInfo: { date: shiftDate, lastClockOut: null, hoursSinceLastClockOut: null }
+      };
+    }
+    
+    // If shift is from a previous day and still "active" (no clock out), 
+    // it might be abandoned - check if we should start a new day
+    const shiftDateObj = new Date(shiftDate + "T23:59:59");
+    const hoursSinceShiftDate = (now.getTime() - shiftDateObj.getTime()) / (1000 * 60 * 60);
+    
+    if (hoursSinceShiftDate >= SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS) {
+      // More than buffer hours since the end of that day, consider it a new day
+      return {
+        workingDate: today,
+        isNewDay: true,
+        lastShiftInfo: { date: shiftDate, lastClockOut: null, hoursSinceLastClockOut: hoursSinceShiftDate }
+      };
+    }
+    
+    // Otherwise, continue with the previous shift's date
+    return {
+      workingDate: shiftDate,
+      isNewDay: false,
+      lastShiftInfo: { date: shiftDate, lastClockOut: null, hoursSinceLastClockOut: hoursSinceShiftDate }
+    };
+  }
+  
+  // Calculate hours since last clock out
+  const lastClockOutTime = new Date(lastClockOut);
+  const hoursSinceLastClockOut = (now.getTime() - lastClockOutTime.getTime()) / (1000 * 60 * 60);
+  
+  // If less than 3 hours since last clock out, continue with that shift's date
+  if (hoursSinceLastClockOut < SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS) {
+    return {
+      workingDate: lastShift.date,
+      isNewDay: false,
+      lastShiftInfo: { date: lastShift.date, lastClockOut: lastClockOutTime, hoursSinceLastClockOut }
+    };
+  }
+  
+  // More than 3 hours since last clock out - it's a new working day
+  return {
+    workingDate: today,
+    isNewDay: true,
+    lastShiftInfo: { date: lastShift.date, lastClockOut: lastClockOutTime, hoursSinceLastClockOut }
+  };
+}
+
+// Clean up stale breaks and shifts from previous days
+async function cleanupStaleRecords(userId: string, currentWorkingDate: string): Promise<{
+  staleBreaksEnded: number;
+  staleShiftsMarked: number;
+}> {
+  const now = new Date();
+  let staleBreaksEnded = 0;
+  let staleShiftsMarked = 0;
+  
+  try {
+    // End any active breaks that are not from the current working date
+    const activeBreaks = await storage.getAllActiveBreaks(userId);
+    
+    for (const brk of activeBreaks) {
+      if (brk.date !== currentWorkingDate) {
+        // This is a stale break from a previous day
+        const startTime = new Date(brk.startTime);
+        const endOfBreakDay = new Date(brk.date + "T23:59:59");
+        
+        // Set end time to end of the break's day or current time, whichever is earlier
+        const endTime = endOfBreakDay < now ? endOfBreakDay : now;
+        const durationMinutes = Math.floor((endTime.getTime() - startTime.getTime()) / 60000);
+        
+        await storage.updateBreak(brk.id, {
+          endTime: endTime,
+          durationMinutes: Math.min(durationMinutes, 480), // Cap at 8 hours
+        });
+        
+        await storage.createActivityLog({
+          userId,
+          action: "break_auto_cleanup",
+          details: `Auto-ended stale ${brk.type} break from ${brk.date}`,
+          timestamp: now,
+        });
+        
+        staleBreaksEnded++;
+      }
+    }
+    
+    // Mark incomplete shifts from previous days
+    const incompleteShifts = await storage.getIncompleteShiftsBeforeDate(userId, currentWorkingDate);
+    
+    for (const shift of incompleteShifts) {
+      // Auto-complete shifts that weren't properly ended
+      const updates: any = { status: "incomplete" };
+      
+      if (shift.morningClockIn && !shift.morningClockOut) {
+        // Set morning clock out to end of morning shift
+        const morningEnd = new Date(shift.date + `T${String(SHIFT_CONFIG.MORNING_END_HOUR).padStart(2, '0')}:00:00`);
+        updates.morningClockOut = morningEnd;
+      }
+      
+      if (shift.eveningClockIn && !shift.eveningClockOut) {
+        // Set evening clock out to end of evening shift
+        const eveningEnd = new Date(shift.date + `T${String(SHIFT_CONFIG.EVENING_END_HOUR).padStart(2, '0')}:00:00`);
+        updates.eveningClockOut = eveningEnd;
+      }
+      
+      await storage.updateShift(shift.id, updates);
+      
+      await storage.createActivityLog({
+        userId,
+        action: "shift_auto_complete",
+        details: `Auto-completed incomplete shift from ${shift.date}`,
+        timestamp: now,
+      });
+      
+      staleShiftsMarked++;
+    }
+  } catch (error) {
+    console.error("Error cleaning up stale records:", error);
+  }
+  
+  return { staleBreaksEnded, staleShiftsMarked };
 }
 
 export async function registerRoutes(
@@ -462,18 +660,31 @@ export async function registerRoutes(
     }
   });
 
-  // ============= EMPLOYEE ROUTES =============
-  
-  // Get today's shift status (with hasSubmittedReport check)
+  // ============= ENHANCED EMPLOYEE ROUTES =============
+
+  // Get today's shift status with proper day management
   app.get("/api/employee/today", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const today = new Date().toISOString().split("T")[0];
+      const now = new Date();
       
-      const shift = await storage.getShiftByUserAndDate(userId, today);
-      const activeBreak = await storage.getActiveBreak(userId);
-      const breaks = await storage.getBreaksByUserAndDate(userId, today);
-      const activityLogs = await storage.getActivityLogsByUser(userId, today);
+      // Get the effective working date (considering 3-hour buffer)
+      const { workingDate, isNewDay, lastShiftInfo } = await getEffectiveWorkingDate(userId);
+      
+      // Clean up any stale records from previous days
+      const cleanup = await cleanupStaleRecords(userId, workingDate);
+      
+      // Get or create today's shift record
+      let shift = await storage.getShiftByUserAndDate(userId, workingDate);
+      
+      // Get active break (only for working date)
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
+      
+      // Get all breaks for working date
+      const breaks = await storage.getBreaksByUserAndDate(userId, workingDate);
+      
+      // Get activity logs for working date
+      const activityLogs = await storage.getActivityLogsByUser(userId, workingDate);
       
       // Check if report is submitted for today's shift
       let hasSubmittedReport = false;
@@ -482,7 +693,7 @@ export async function registerRoutes(
         hasSubmittedReport = !!report;
       }
       
-      // Count breaks by type
+      // Count breaks by type for working date
       const breakCounts = {
         prayer: breaks.filter(b => b.type === "prayer").length,
         meal: breaks.filter(b => b.type === "meal").length,
@@ -492,6 +703,19 @@ export async function registerRoutes(
       // Calculate total break duration
       const totalBreakMinutes = breaks.reduce((acc, b) => acc + (b.durationMinutes || 0), 0);
       
+      // Get user's shift configuration
+      const user = await storage.getUser(userId);
+      
+      // Calculate next reset time
+      let nextResetTime: string | null = null;
+      if (shift) {
+        const lastClockOut = shift.eveningClockOut || shift.morningClockOut;
+        if (lastClockOut) {
+          const resetTime = new Date(new Date(lastClockOut).getTime() + (SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS * 60 * 60 * 1000));
+          nextResetTime = resetTime.toISOString();
+        }
+      }
+      
       res.json({
         shift,
         activeBreak,
@@ -500,28 +724,69 @@ export async function registerRoutes(
         totalBreakMinutes,
         activityLogs,
         hasSubmittedReport,
+        currentDate: workingDate,
+        isNewDay,
+        lastShiftInfo,
+        nextResetTime,
+        cleanup: cleanup.staleBreaksEnded > 0 || cleanup.staleShiftsMarked > 0 ? cleanup : undefined,
+        serverTime: now.toISOString(),
+        shiftConfig: {
+          shiftType: user?.shiftType || 'one_shift',
+          shiftStartTime: user?.shiftStartTime,
+          shiftEndTime: user?.shiftEndTime,
+          resetBufferHours: SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS,
+        }
       });
     } catch (error) {
       console.error("Failed to fetch today's status:", error);
       res.status(500).json({ error: "Failed to fetch today's status" });
     }
   });
+
+  // Check day status endpoint (lightweight check for frontend polling)
+  app.get("/api/employee/day-status", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const { workingDate, isNewDay, lastShiftInfo } = await getEffectiveWorkingDate(userId);
+      
+      res.json({
+        workingDate,
+        isNewDay,
+        lastShiftInfo,
+        serverTime: new Date().toISOString(),
+        resetBufferHours: SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS,
+      });
+    } catch (error) {
+      console.error("Failed to check day status:", error);
+      res.status(500).json({ error: "Failed to check day status" });
+    }
+  });
   
-  // Start morning shift (clock in)
+  // Start morning shift (clock in) - Enhanced with proper date handling
   app.post("/api/employee/shift/morning/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const today = new Date().toISOString().split("T")[0];
       const now = new Date();
       
-      let shift = await storage.getShiftByUserAndDate(userId, today);
+      // Get effective working date
+      const { workingDate, isNewDay } = await getEffectiveWorkingDate(userId);
       
-      if (shift?.morningClockIn) {
-        return res.status(400).json({ error: "Morning shift already started" });
+      // Clean up stale records first
+      await cleanupStaleRecords(userId, workingDate);
+      
+      // Get existing shift for working date
+      let shift = await storage.getShiftByUserAndDate(userId, workingDate);
+      
+      // Check if morning shift already started for this working date
+      if (shift?.morningClockIn && isFromDate(shift.morningClockIn, workingDate)) {
+        if (!shift.morningClockOut) {
+          return res.status(400).json({ error: "Morning shift already active" });
+        }
+        return res.status(400).json({ error: "Morning shift already completed for today" });
       }
       
       // Check if user is on break
-      const activeBreak = await storage.getActiveBreak(userId);
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
         return res.status(400).json({ error: "Please end your break first" });
       }
@@ -529,25 +794,38 @@ export async function registerRoutes(
       // Calculate late minutes
       const user = await storage.getUser(userId);
       let lateMinutes = 0;
+      
       if (user?.shiftStartTime) {
         const [hours, minutes] = user.shiftStartTime.split(":").map(Number);
         const shiftStart = new Date();
         shiftStart.setHours(hours, minutes, 0, 0);
+        
         if (now > shiftStart) {
           lateMinutes = Math.floor((now.getTime() - shiftStart.getTime()) / 60000);
+        }
+      } else {
+        // Default morning start time
+        const defaultStart = new Date();
+        defaultStart.setHours(SHIFT_CONFIG.MORNING_START_HOUR, 0, 0, 0);
+        
+        if (now > defaultStart) {
+          lateMinutes = Math.floor((now.getTime() - defaultStart.getTime()) / 60000);
         }
       }
       
       if (shift) {
+        // Update existing shift record
         shift = await storage.updateShift(shift.id, {
           morningClockIn: now,
+          morningClockOut: null,
           morningLateMinutes: lateMinutes,
           status: lateMinutes > 0 ? "late" : "present",
         });
       } else {
+        // Create new shift record
         shift = await storage.createShift({
           userId,
-          date: today,
+          date: workingDate,
           morningClockIn: now,
           morningLateMinutes: lateMinutes,
           status: lateMinutes > 0 ? "late" : "present",
@@ -561,7 +839,12 @@ export async function registerRoutes(
         timestamp: now,
       });
       
-      res.json(shift);
+      res.json({ 
+        ...shift, 
+        workingDate, 
+        isNewDay,
+        message: `Morning shift started for ${workingDate}`
+      });
     } catch (error) {
       console.error("Failed to start morning shift:", error);
       res.status(500).json({ error: "Failed to start morning shift" });
@@ -572,10 +855,12 @@ export async function registerRoutes(
   app.post("/api/employee/shift/morning/end", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const today = new Date().toISOString().split("T")[0];
       const now = new Date();
       
-      const shift = await storage.getShiftByUserAndDate(userId, today);
+      // Get effective working date
+      const { workingDate } = await getEffectiveWorkingDate(userId);
+      
+      const shift = await storage.getShiftByUserAndDate(userId, workingDate);
       
       if (!shift?.morningClockIn) {
         return res.status(400).json({ error: "Morning shift not started" });
@@ -585,10 +870,23 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Morning shift already ended" });
       }
       
-      // Check if user is on break
-      const activeBreak = await storage.getActiveBreak(userId);
+      // Check if user is on break - auto end it
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
-        return res.status(400).json({ error: "Please end your break first before ending shift" });
+        const durationMinutes = Math.floor(
+          (now.getTime() - new Date(activeBreak.startTime).getTime()) / 60000
+        );
+        await storage.updateBreak(activeBreak.id, {
+          endTime: now,
+          durationMinutes,
+        });
+        
+        await storage.createActivityLog({
+          userId,
+          action: "break_auto_end",
+          details: `Auto-ended ${activeBreak.type} break (${durationMinutes} minutes) due to shift end`,
+          timestamp: now,
+        });
       }
       
       // Check if report is submitted (REQUIRED)
@@ -600,6 +898,11 @@ export async function registerRoutes(
         });
       }
       
+      // Calculate total work time
+      const workMinutes = Math.floor(
+        (now.getTime() - new Date(shift.morningClockIn).getTime()) / 60000
+      );
+      
       const updated = await storage.updateShift(shift.id, {
         morningClockOut: now,
       });
@@ -607,11 +910,18 @@ export async function registerRoutes(
       await storage.createActivityLog({
         userId,
         action: "morning_clock_out",
-        details: "Morning shift ended",
+        details: `Morning shift ended. Total time: ${Math.floor(workMinutes / 60)}h ${workMinutes % 60}m`,
         timestamp: now,
       });
       
-      res.json(updated);
+      // Calculate when the day will reset
+      const resetTime = new Date(now.getTime() + (SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS * 60 * 60 * 1000));
+      
+      res.json({
+        ...updated,
+        nextResetTime: resetTime.toISOString(),
+        message: `Morning shift ended. New day will start after ${resetTime.toLocaleTimeString()}`
+      });
     } catch (error) {
       console.error("Failed to end morning shift:", error);
       res.status(500).json({ error: "Failed to end morning shift" });
@@ -622,45 +932,50 @@ export async function registerRoutes(
   app.post("/api/employee/shift/evening/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const today = new Date().toISOString().split("T")[0];
       const now = new Date();
       
-      let shift = await storage.getShiftByUserAndDate(userId, today);
+      // Get effective working date
+      const { workingDate, isNewDay } = await getEffectiveWorkingDate(userId);
       
-      if (shift?.eveningClockIn) {
-        return res.status(400).json({ error: "Evening shift already started" });
+      // Clean up stale records first
+      await cleanupStaleRecords(userId, workingDate);
+      
+      let shift = await storage.getShiftByUserAndDate(userId, workingDate);
+      
+      // Check if evening shift already started/active for this working date
+      if (shift?.eveningClockIn && isFromDate(shift.eveningClockIn, workingDate)) {
+        if (!shift.eveningClockOut) {
+          return res.status(400).json({ error: "Evening shift already active" });
+        }
+        return res.status(400).json({ error: "Evening shift already completed for today" });
       }
       
       // Check if user is on break
-      const activeBreak = await storage.getActiveBreak(userId);
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
         return res.status(400).json({ error: "Please end your break first" });
       }
       
       // Calculate late minutes for evening shift
-      const user = await storage.getUser(userId);
       let lateMinutes = 0;
+      const eveningStart = new Date();
+      eveningStart.setHours(SHIFT_CONFIG.EVENING_START_HOUR, 0, 0, 0);
       
-      // For two_shifts, check evening shift start time
-      if (user?.shiftType === 'two_shifts' && (user as any).eveningShiftStart) {
-        const [hours, minutes] = (user as any).eveningShiftStart.split(":").map(Number);
-        const shiftStart = new Date();
-        shiftStart.setHours(hours, minutes, 0, 0);
-        if (now > shiftStart) {
-          lateMinutes = Math.floor((now.getTime() - shiftStart.getTime()) / 60000);
-        }
+      if (now > eveningStart) {
+        lateMinutes = Math.floor((now.getTime() - eveningStart.getTime()) / 60000);
       }
       
       if (shift) {
         shift = await storage.updateShift(shift.id, {
           eveningClockIn: now,
+          eveningClockOut: null,
           eveningLateMinutes: lateMinutes,
           status: shift.status === "not_started" ? (lateMinutes > 0 ? "late" : "present") : shift.status,
         });
       } else {
         shift = await storage.createShift({
           userId,
-          date: today,
+          date: workingDate,
           eveningClockIn: now,
           eveningLateMinutes: lateMinutes,
           status: lateMinutes > 0 ? "late" : "present",
@@ -674,7 +989,12 @@ export async function registerRoutes(
         timestamp: now,
       });
       
-      res.json(shift);
+      res.json({
+        ...shift,
+        workingDate,
+        isNewDay,
+        message: `Evening shift started for ${workingDate}`
+      });
     } catch (error) {
       console.error("Failed to start evening shift:", error);
       res.status(500).json({ error: "Failed to start evening shift" });
@@ -685,10 +1005,12 @@ export async function registerRoutes(
   app.post("/api/employee/shift/evening/end", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const today = new Date().toISOString().split("T")[0];
       const now = new Date();
       
-      const shift = await storage.getShiftByUserAndDate(userId, today);
+      // Get effective working date
+      const { workingDate } = await getEffectiveWorkingDate(userId);
+      
+      const shift = await storage.getShiftByUserAndDate(userId, workingDate);
       
       if (!shift?.eveningClockIn) {
         return res.status(400).json({ error: "Evening shift not started" });
@@ -698,10 +1020,23 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Evening shift already ended" });
       }
       
-      // Check if user is on break
-      const activeBreak = await storage.getActiveBreak(userId);
+      // Check if user is on break - auto end it
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
-        return res.status(400).json({ error: "Please end your break first before ending shift" });
+        const durationMinutes = Math.floor(
+          (now.getTime() - new Date(activeBreak.startTime).getTime()) / 60000
+        );
+        await storage.updateBreak(activeBreak.id, {
+          endTime: now,
+          durationMinutes,
+        });
+        
+        await storage.createActivityLog({
+          userId,
+          action: "break_auto_end",
+          details: `Auto-ended ${activeBreak.type} break (${durationMinutes} minutes) due to shift end`,
+          timestamp: now,
+        });
       }
       
       // Check if report is submitted (REQUIRED)
@@ -713,6 +1048,10 @@ export async function registerRoutes(
         });
       }
       
+      const workMinutes = Math.floor(
+        (now.getTime() - new Date(shift.eveningClockIn).getTime()) / 60000
+      );
+      
       const updated = await storage.updateShift(shift.id, {
         eveningClockOut: now,
       });
@@ -720,22 +1059,28 @@ export async function registerRoutes(
       await storage.createActivityLog({
         userId,
         action: "evening_clock_out",
-        details: "Evening shift ended",
+        details: `Evening shift ended. Total time: ${Math.floor(workMinutes / 60)}h ${workMinutes % 60}m`,
         timestamp: now,
       });
       
-      res.json(updated);
+      // Calculate when the day will reset
+      const resetTime = new Date(now.getTime() + (SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS * 60 * 60 * 1000));
+      
+      res.json({
+        ...updated,
+        nextResetTime: resetTime.toISOString(),
+        message: `Evening shift ended. New day will start after ${resetTime.toLocaleTimeString()}`
+      });
     } catch (error) {
       console.error("Failed to end evening shift:", error);
       res.status(500).json({ error: "Failed to end evening shift" });
     }
   });
 
-  // Start break
+  // Start break with enhanced validation
   app.post("/api/employee/break/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const today = new Date().toISOString().split("T")[0];
       const now = new Date();
       const { type } = req.body;
       
@@ -743,8 +1088,12 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid break type. Must be prayer, meal, or urgent" });
       }
       
-      // Check if shift is active
-      const shift = await storage.getShiftByUserAndDate(userId, today);
+      // Get effective working date
+      const { workingDate } = await getEffectiveWorkingDate(userId);
+      
+      // Check if shift is active for working date
+      const shift = await storage.getShiftByUserAndDate(userId, workingDate);
+      
       const isMorningActive = shift?.morningClockIn && !shift?.morningClockOut;
       const isEveningActive = shift?.eveningClockIn && !shift?.eveningClockOut;
       
@@ -753,35 +1102,51 @@ export async function registerRoutes(
       }
       
       // Check if already on break
-      const activeBreak = await storage.getActiveBreak(userId);
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
         return res.status(400).json({ error: "Already on a break. Please end your current break first" });
       }
       
       const currentPeriod = isMorningActive ? "morning" : "evening";
       
-      // Check break limits
+      // Check break limits for working date
+      const todayBreaks = await storage.getBreaksByUserAndDate(userId, workingDate);
+      
       if (type === "prayer") {
-        const count = await storage.countBreaksByType(userId, today, "prayer");
-        if (count >= BREAK_LIMITS.prayer.maxPerDay) {
-          return res.status(400).json({ error: `Maximum prayer breaks (${BREAK_LIMITS.prayer.maxPerDay}) reached for today` });
+        const prayerBreaks = todayBreaks.filter(b => b.type === "prayer");
+        if (prayerBreaks.length >= BREAK_LIMITS.prayer.maxPerDay) {
+          return res.status(400).json({ 
+            error: `Maximum prayer breaks (${BREAK_LIMITS.prayer.maxPerDay}) reached for today`,
+            currentCount: prayerBreaks.length,
+            maxAllowed: BREAK_LIMITS.prayer.maxPerDay
+          });
         }
       } else if (type === "meal") {
-        const count = await storage.countBreaksByType(userId, today, "meal");
-        if (count >= BREAK_LIMITS.meal.maxPerDay) {
-          return res.status(400).json({ error: "Meal break already taken today" });
+        const mealBreaks = todayBreaks.filter(b => b.type === "meal");
+        if (mealBreaks.length >= BREAK_LIMITS.meal.maxPerDay) {
+          return res.status(400).json({ 
+            error: "Meal break already taken today",
+            currentCount: mealBreaks.length,
+            maxAllowed: BREAK_LIMITS.meal.maxPerDay
+          });
         }
       } else if (type === "urgent") {
-        const count = await storage.countBreaksByType(userId, today, "urgent", currentPeriod);
-        if (count >= BREAK_LIMITS.urgent.maxPerShift) {
-          return res.status(400).json({ error: `Maximum urgent breaks (${BREAK_LIMITS.urgent.maxPerShift}) reached for this shift` });
+        const urgentBreaksThisPeriod = todayBreaks.filter(
+          b => b.type === "urgent" && b.shiftPeriod === currentPeriod
+        );
+        if (urgentBreaksThisPeriod.length >= BREAK_LIMITS.urgent.maxPerShift) {
+          return res.status(400).json({ 
+            error: `Maximum urgent breaks (${BREAK_LIMITS.urgent.maxPerShift}) reached for this ${currentPeriod} shift`,
+            currentCount: urgentBreaksThisPeriod.length,
+            maxAllowed: BREAK_LIMITS.urgent.maxPerShift
+          });
         }
       }
       
       const breakRecord = await storage.createBreak({
         userId,
         shiftId: shift?.id || null,
-        date: today,
+        date: workingDate,
         type,
         shiftPeriod: currentPeriod,
         startTime: now,
@@ -790,7 +1155,7 @@ export async function registerRoutes(
       await storage.createActivityLog({
         userId,
         action: "break_start",
-        details: `Started ${type} break`,
+        details: `Started ${type} break during ${currentPeriod} shift`,
         timestamp: now,
       });
       
@@ -801,15 +1166,67 @@ export async function registerRoutes(
     }
   });
 
-  // End break
+  // End break with duration validation
   app.post("/api/employee/break/end", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
       
-      const activeBreak = await storage.getActiveBreak(userId);
+      // Get effective working date
+      const { workingDate } = await getEffectiveWorkingDate(userId);
+      
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (!activeBreak) {
         return res.status(400).json({ error: "No active break to end" });
+      }
+      
+      const durationMinutes = Math.floor(
+        (now.getTime() - new Date(activeBreak.startTime).getTime()) / 60000
+      );
+      
+      // Warn if break was too long
+      let warning = null;
+      const maxBreakMinutes = {
+        prayer: 15,
+        meal: 45,
+        urgent: 10
+      };
+      
+      if (durationMinutes > maxBreakMinutes[activeBreak.type as keyof typeof maxBreakMinutes]) {
+        warning = `Break exceeded recommended duration of ${maxBreakMinutes[activeBreak.type as keyof typeof maxBreakMinutes]} minutes`;
+      }
+      
+      const updated = await storage.updateBreak(activeBreak.id, {
+        endTime: now,
+        durationMinutes,
+      });
+      
+      await storage.createActivityLog({
+        userId,
+        action: "break_end",
+        details: `Ended ${activeBreak.type} break (${durationMinutes} minutes)${warning ? ` - ${warning}` : ''}`,
+        timestamp: now,
+      });
+      
+      res.json({ ...updated, warning });
+    } catch (error) {
+      console.error("Failed to end break:", error);
+      res.status(500).json({ error: "Failed to end break" });
+    }
+  });
+
+  // Force end all active breaks (for cleanup)
+  app.post("/api/employee/break/force-end", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const now = new Date();
+      
+      // Get effective working date
+      const { workingDate } = await getEffectiveWorkingDate(userId);
+      
+      const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
+      if (!activeBreak) {
+        return res.json({ message: "No active break to end" });
       }
       
       const durationMinutes = Math.floor(
@@ -823,15 +1240,15 @@ export async function registerRoutes(
       
       await storage.createActivityLog({
         userId,
-        action: "break_end",
-        details: `Ended ${activeBreak.type} break (${durationMinutes} minutes)`,
+        action: "break_force_end",
+        details: `Force-ended ${activeBreak.type} break (${durationMinutes} minutes)`,
         timestamp: now,
       });
       
       res.json(updated);
     } catch (error) {
-      console.error("Failed to end break:", error);
-      res.status(500).json({ error: "Failed to end break" });
+      console.error("Failed to force end break:", error);
+      res.status(500).json({ error: "Failed to force end break" });
     }
   });
   
@@ -839,7 +1256,8 @@ export async function registerRoutes(
   app.get("/api/employee/shifts", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const shifts = await storage.getShiftsByUser(userId);
+      const limit = parseInt(req.query.limit as string) || 30;
+      const shifts = await storage.getShiftsByUser(userId, limit);
       res.json(shifts);
     } catch (error) {
       console.error("Failed to fetch shifts:", error);
@@ -851,12 +1269,61 @@ export async function registerRoutes(
   app.get("/api/employee/activity-logs", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const date = req.query.date as string | undefined;
+      const date = req.query.date as string || getTodayDate();
       const logs = await storage.getActivityLogsByUser(userId, date);
       res.json(logs);
     } catch (error) {
       console.error("Failed to fetch activity logs:", error);
       res.status(500).json({ error: "Failed to fetch activity logs" });
+    }
+  });
+
+  // Force reset dashboard for new day
+  app.post("/api/employee/force-reset", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const today = getTodayDate();
+      
+      // Clean up all stale records
+      const cleanup = await cleanupStaleRecords(userId, today);
+      
+      await storage.createActivityLog({
+        userId,
+        action: "day_force_reset",
+        details: `Manual day reset. Cleaned: ${cleanup.staleBreaksEnded} breaks, ${cleanup.staleShiftsMarked} shifts`,
+        timestamp: new Date(),
+      });
+      
+      res.json({ 
+        success: true, 
+        message: "Dashboard reset for new day",
+        date: today,
+        cleanup
+      });
+    } catch (error) {
+      console.error("Failed to reset day:", error);
+      res.status(500).json({ error: "Failed to reset day" });
+    }
+  });
+
+  // Legacy endpoint - kept for backward compatibility
+  app.post("/api/employee/reset-day", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const today = getTodayDate();
+      
+      // Clean up all stale records
+      const cleanup = await cleanupStaleRecords(userId, today);
+      
+      res.json({ 
+        success: true, 
+        message: "Dashboard reset for new day",
+        date: today,
+        cleanup
+      });
+    } catch (error) {
+      console.error("Failed to reset day:", error);
+      res.status(500).json({ error: "Failed to reset day" });
     }
   });
 
@@ -919,8 +1386,6 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to add target item" });
     }
   });
-
-  // ====== NEW BUSINESS DEVELOPMENT ROUTES ======
 
   // Delete target item (employee can delete their own unverified items)
   app.delete("/api/employee/targets/items/:id", requireAuth, async (req, res) => {
@@ -1049,8 +1514,6 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to fetch targets summary" });
     }
   });
-
-  // ====== END NEW BUSINESS DEVELOPMENT ROUTES ======
 
   app.get("/api/admin/targets", requireAdmin, async (req, res) => {
     try {

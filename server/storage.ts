@@ -39,6 +39,7 @@ import {
   type SafeUser,
   BREAK_LIMITS
 } from "@shared/schema";
+import { and, eq, isNull, isNotNull, lt, or, desc } from "drizzle-orm";
 import { db } from "./db";
 import { eq, desc, and, sql, inArray } from "drizzle-orm";
 
@@ -132,7 +133,15 @@ getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[
   isMonthArchived(month: string): Promise<boolean>;
   getArchivedReports(month: string): Promise<DailyShiftReport[]>;
   getArchivedRequests(month: string): Promise<SpecialRequest[]>;
-  
+  // Add to IStorage interface in storage.ts
+getActiveBreakForDate(userId: string, date: string): Promise<Break | undefined>;
+endStaleBraaks(userId: string, currentDate: string): Promise<number>;
+getOrCreateShiftForDate(userId: string, date: string): Promise<Shift>;
+getBreakStatsForPeriod(userId: string, startDate: string, endDate: string): Promise<{
+  totalBreaks: number;
+  totalDuration: number;
+  byType: { type: string; count: number; duration: number }[];
+}>;
   // Dashboard stats
   getDashboardStats(): Promise<{
     totalEmployees: number;
@@ -264,7 +273,45 @@ export class DatabaseStorage implements IStorage {
     async deleteTargetItem(id: string): Promise<void> {
     await db.delete(targetItems).where(eq(targetItems.id, id));
   }
+// Add these methods to your storage.ts file
 
+// Get all active breaks for a user (across all dates)
+async getAllActiveBreaks(userId: string): Promise<Break[]> {
+  return await db
+    .select()
+    .from(breaks)
+    .where(
+      and(
+        eq(breaks.userId, userId),
+        isNull(breaks.endTime)
+      )
+    )
+    .orderBy(desc(breaks.startTime));
+}
+
+// Get incomplete shifts before a specific date
+async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise<Shift[]> {
+  return await db
+    .select()
+    .from(shifts)
+    .where(
+      and(
+        eq(shifts.userId, userId),
+        lt(shifts.date, beforeDate),
+        or(
+          and(
+            isNotNull(shifts.morningClockIn),
+            isNull(shifts.morningClockOut)
+          ),
+          and(
+            isNotNull(shifts.eveningClockIn),
+            isNull(shifts.eveningClockOut)
+          )
+        )
+      )
+    )
+    .orderBy(desc(shifts.date));
+}
   // Get target items by user and month
   async getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]> {
     const startDate = `${month}-01`;
@@ -557,7 +604,122 @@ export class DatabaseStorage implements IStorage {
       return created;
     }
   }
+// server/storage.ts - Add these methods to the DatabaseStorage class
 
+  // Get active break for a specific date only
+  async getActiveBreakForDate(userId: string, date: string): Promise<Break | undefined> {
+    const [activeBreak] = await db
+      .select()
+      .from(breaks)
+      .where(and(
+        eq(breaks.userId, userId),
+        eq(breaks.date, date),
+        sql`${breaks.endTime} IS NULL`
+      ))
+      .orderBy(desc(breaks.startTime))
+      .limit(1);
+    return activeBreak || undefined;
+  }
+
+  // End stale breaks from previous days
+  async endStaleBraaks(userId: string, currentDate: string): Promise<number> {
+    const now = new Date();
+    
+    // Find all breaks without end time that are not from today
+    const staleBreaks = await db
+      .select()
+      .from(breaks)
+      .where(and(
+        eq(breaks.userId, userId),
+        sql`${breaks.endTime} IS NULL`,
+        sql`${breaks.date} < ${currentDate}`
+      ));
+    
+    let endedCount = 0;
+    
+    for (const brk of staleBreaks) {
+      // End the break at midnight of that day
+      const breakDate = new Date(brk.date);
+      breakDate.setHours(23, 59, 59, 999);
+      
+      const durationMinutes = Math.floor(
+        (breakDate.getTime() - new Date(brk.startTime).getTime()) / 60000
+      );
+      
+      await db.update(breaks).set({
+        endTime: breakDate,
+        durationMinutes: Math.min(durationMinutes, 480), // Cap at 8 hours
+      }).where(eq(breaks.id, brk.id));
+      
+      endedCount++;
+    }
+    
+    return endedCount;
+  }
+
+  // Get shifts with limit
+  async getShiftsByUser(userId: string, limit: number = 30): Promise<Shift[]> {
+    return await db
+      .select()
+      .from(shifts)
+      .where(eq(shifts.userId, userId))
+      .orderBy(desc(shifts.date))
+      .limit(limit);
+  }
+
+  // Check if shift exists for date and is properly initialized
+  async getOrCreateShiftForDate(userId: string, date: string): Promise<Shift> {
+    let shift = await this.getShiftByUserAndDate(userId, date);
+    
+    if (!shift) {
+      shift = await this.createShift({
+        userId,
+        date,
+        status: "not_started",
+      });
+    }
+    
+    return shift;
+  }
+
+  // Get break statistics for a date range
+  async getBreakStatsForPeriod(userId: string, startDate: string, endDate: string): Promise<{
+    totalBreaks: number;
+    totalDuration: number;
+    byType: { type: string; count: number; duration: number }[];
+  }> {
+    const allBreaks = await db
+      .select()
+      .from(breaks)
+      .where(and(
+        eq(breaks.userId, userId),
+        sql`${breaks.date} >= ${startDate}`,
+        sql`${breaks.date} <= ${endDate}`
+      ));
+    
+    const byType = [
+      { type: "prayer", count: 0, duration: 0 },
+      { type: "meal", count: 0, duration: 0 },
+      { type: "urgent", count: 0, duration: 0 },
+    ];
+    
+    let totalDuration = 0;
+    
+    for (const brk of allBreaks) {
+      const stat = byType.find(s => s.type === brk.type);
+      if (stat) {
+        stat.count++;
+        stat.duration += brk.durationMinutes || 0;
+      }
+      totalDuration += brk.durationMinutes || 0;
+    }
+    
+    return {
+      totalBreaks: allBreaks.length,
+      totalDuration,
+      byType,
+    };
+  }
   // Department methods
   async getDepartments(): Promise<Department[]> {
     return await db.select().from(departments);
