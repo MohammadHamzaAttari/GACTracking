@@ -43,6 +43,9 @@ import { db } from "./db";
 import { eq, desc, and, sql, inArray } from "drizzle-orm";
 
 export interface IStorage {
+  // Add to IStorage interface
+deleteTargetItem(id: string): Promise<void>;
+getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]>;
   // User methods
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
@@ -257,6 +260,25 @@ export class DatabaseStorage implements IStorage {
       createdAt: users.createdAt,
     }).from(users).where(eq(users.department, department));
     return deptUsers as SafeUser[];
+  } 
+    async deleteTargetItem(id: string): Promise<void> {
+    await db.delete(targetItems).where(eq(targetItems.id, id));
+  }
+
+  // Get target items by user and month
+  async getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]> {
+    const startDate = `${month}-01`;
+    const endDate = `${month}-31`;
+    
+    return await db
+      .select()
+      .from(targetItems)
+      .where(and(
+        eq(targetItems.userId, userId),
+        sql`${targetItems.date} >= ${startDate}`,
+        sql`${targetItems.date} <= ${endDate}`
+      ))
+      .orderBy(desc(targetItems.createdAt));
   }
 
   // Shift methods

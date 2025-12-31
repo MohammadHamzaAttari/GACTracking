@@ -883,7 +883,7 @@ export async function registerRoutes(
   app.post("/api/employee/targets/items", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const { type, name, source, contactLink, date } = req.body;
+      const { type, name, source, clientType, contactLink, date } = req.body;
       const month = (date as string).slice(0, 7);
       
       if (!["meeting", "order"].includes(type)) {
@@ -901,6 +901,7 @@ export async function registerRoutes(
         type,
         name,
         source,
+        clientType,
         contactLink,
         date,
       });
@@ -918,6 +919,138 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to add target item" });
     }
   });
+
+  // ====== NEW BUSINESS DEVELOPMENT ROUTES ======
+
+  // Delete target item (employee can delete their own unverified items)
+  app.delete("/api/employee/targets/items/:id", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const { id } = req.params;
+      
+      const item = await storage.getTargetItemById(id);
+      if (!item) {
+        return res.status(404).json({ error: "Target item not found" });
+      }
+      
+      // Only allow deleting own items that aren't verified
+      if (item.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to delete this item" });
+      }
+      
+      if (item.verified) {
+        return res.status(400).json({ error: "Cannot delete verified items" });
+      }
+      
+      await storage.deleteTargetItem(id);
+      
+      await storage.createActivityLog({
+        userId,
+        action: `target_${item.type}_deleted`,
+        details: `Deleted ${item.type}: ${item.name}`,
+        timestamp: new Date(),
+      });
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Failed to delete target item:", error);
+      res.status(500).json({ error: "Failed to delete target item" });
+    }
+  });
+
+  // Update target item (employee can update their own unverified items)
+  app.patch("/api/employee/targets/items/:id", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const { id } = req.params;
+      const { name, source, clientType, contactLink, date } = req.body;
+      
+      const item = await storage.getTargetItemById(id);
+      if (!item) {
+        return res.status(404).json({ error: "Target item not found" });
+      }
+      
+      // Only allow updating own items that aren't verified
+      if (item.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to update this item" });
+      }
+      
+      if (item.verified) {
+        return res.status(400).json({ error: "Cannot update verified items" });
+      }
+      
+      const updated = await storage.updateTargetItem(id, {
+        name,
+        source,
+        clientType,
+        contactLink,
+        date,
+      });
+      
+      await storage.createActivityLog({
+        userId,
+        action: `target_${item.type}_updated`,
+        details: `Updated ${item.type}: ${name}`,
+        timestamp: new Date(),
+      });
+      
+      res.json(updated);
+    } catch (error) {
+      console.error("Failed to update target item:", error);
+      res.status(500).json({ error: "Failed to update target item" });
+    }
+  });
+
+  // Get current user's target items for current month (employee endpoint)
+  app.get("/api/employee/targets/items", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+      
+      const items = await storage.getTargetItemsByUserAndMonth(userId, month);
+      res.json(items);
+    } catch (error) {
+      console.error("Failed to fetch target items:", error);
+      res.status(500).json({ error: "Failed to fetch target items" });
+    }
+  });
+
+  // Get employee's targets summary
+  app.get("/api/employee/targets/summary", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+      
+      // Get or create target for this user/month
+      let target = await storage.getTargetByUserAndMonth(userId, month);
+      
+      // Get all items for this user and month
+      const items = await storage.getTargetItemsByUserAndMonth(userId, month);
+      
+      // Calculate stats
+      const meetings = items.filter(i => i.type === "meeting");
+      const orders = items.filter(i => i.type === "order");
+      
+      res.json({
+        target: target || { meetingTarget: 20, orderTarget: 5 }, // Default targets
+        meetings: {
+          total: meetings.length,
+          verified: meetings.filter(m => m.verified).length,
+          items: meetings,
+        },
+        orders: {
+          total: orders.length,
+          verified: orders.filter(o => o.verified).length,
+          items: orders,
+        },
+      });
+    } catch (error) {
+      console.error("Failed to fetch targets summary:", error);
+      res.status(500).json({ error: "Failed to fetch targets summary" });
+    }
+  });
+
+  // ====== END NEW BUSINESS DEVELOPMENT ROUTES ======
 
   app.get("/api/admin/targets", requireAdmin, async (req, res) => {
     try {
@@ -967,6 +1100,41 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Failed to verify target item:", error);
       res.status(500).json({ error: "Failed to verify target item" });
+    }
+  });
+
+  // Admin: Unverify target item
+  app.patch("/api/admin/targets/items/:id/unverify", requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      const item = await storage.updateTargetItem(id, {
+        verified: false,
+        verifiedAt: null,
+        verifiedBy: null,
+      });
+      
+      if (!item) {
+        return res.status(404).json({ error: "Target item not found" });
+      }
+      
+      res.json(item);
+    } catch (error) {
+      console.error("Failed to unverify target item:", error);
+      res.status(500).json({ error: "Failed to unverify target item" });
+    }
+  });
+
+  // Admin: Delete target item
+  app.delete("/api/admin/targets/items/:id", requireAdmin, async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      await storage.deleteTargetItem(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Failed to delete target item:", error);
+      res.status(500).json({ error: "Failed to delete target item" });
     }
   });
 
@@ -1366,3 +1534,4 @@ export async function registerRoutes(
 
   return httpServer;
 }
+// ⚠️ END OF FILE - DO NOT ADD ANYTHING AFTER THIS LINE

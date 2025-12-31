@@ -396,3 +396,17 @@ export const SPECIAL_REQUEST_STATUSES = [
   "revision",
   "resolved",
 ] as const;
+// shared/schema.ts - Find and update the targetItems table
+
+
+
+// Also add at the bottom of the file, after WHATSAPP_PREFERENCES:
+// Business Development Sources
+export const BUSINESS_SOURCES = [
+  "FB Yousaf", "FB Abdullah", "FB Get Ai",
+  "Insta Yousaf", "Insta Getai",
+  "Linkedin Yousaf", "Linkedin Abdullah", "Linkedin Get Ai",
+  "Discovery", "Top Upwork", "New Upwork", "Fiver Top"
+] as const;
+
+export const CLIENT_TYPES = ["B2B", "B2C"] as const;
