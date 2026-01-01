@@ -2,6 +2,10 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { db } from "./db";
+import { users } from "@shared/schema";
+import { eq } from "drizzle-orm";
+import bcrypt from "bcrypt";
 
 const app = express();
 const httpServer = createServer(app);
@@ -59,7 +63,36 @@ app.use((req, res, next) => {
   next();
 });
 
+async function ensureAdminExists() {
+  try {
+    const existingAdmin = await db
+      .select()
+      .from(users)
+      .where(eq(users.username, "admin"))
+      .limit(1);
+
+    if (existingAdmin.length === 0) {
+      const hashedPassword = await bcrypt.hash("admin123", 10);
+      await db.insert(users).values({
+        username: "admin",
+        password: hashedPassword,
+        firstName: "System",
+        lastName: "Administrator",
+        email: "admin@gactrackings.com",
+        role: "admin",
+        department: "Administration",
+        position: "System Admin",
+        isActive: true,
+      });
+      log("Default admin user created (admin/admin123)");
+    }
+  } catch (error) {
+    console.error("Failed to ensure admin exists:", error);
+  }
+}
+
 (async () => {
+  await ensureAdminExists();
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
