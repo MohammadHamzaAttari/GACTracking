@@ -21,8 +21,19 @@ import {
   notifyShiftEnd, 
   notifyBreakStart, 
   notifyBreakEnd,
-  notifyDailyReportSubmitted 
+  notifyDailyReportSubmitted,
+  type WasenderSettings
 } from "./wasender";
+
+// Helper to get WASENDER settings from storage
+async function getWasenderSettings(): Promise<WasenderSettings> {
+  const config = await storage.getWasenderConfig();
+  return {
+    apiToken: config?.apiToken || null,
+    groupId: config?.groupId || null,
+    isActive: config?.isActive || false,
+  };
+}
 
 const SALT_ROUNDS = 10;
 
@@ -667,7 +678,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   app.get("/api/admin/wasender-config", requireAdmin, async (req, res) => {
     try {
       const config = await storage.getWasenderConfig();
-      res.json(config || { instanceId: "", apiToken: "", isActive: false });
+      res.json(config || { instanceId: "", apiToken: "", groupId: "", isActive: false });
     } catch (error) {
       console.error("Failed to fetch WASENDER config:", error);
       res.status(500).json({ error: "Failed to fetch WASENDER config" });
@@ -676,8 +687,8 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
 
   app.post("/api/admin/wasender-config", requireAdmin, async (req, res) => {
     try {
-      const { instanceId, apiToken, isActive } = req.body;
-      const config = await storage.updateWasenderConfig({ instanceId, apiToken, isActive });
+      const { instanceId, apiToken, groupId, isActive } = req.body;
+      const config = await storage.updateWasenderConfig({ instanceId, apiToken, groupId, isActive });
       res.json(config);
     } catch (error) {
       console.error("Failed to update WASENDER config:", error);
@@ -903,10 +914,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       
       // Send WhatsApp notification (user already fetched above)
       if (user) {
-        notifyShiftStart({
-          fullName: `${user.firstName} ${user.lastName}`,
-          department: user.department || "Not Assigned"
-        }).catch(err => console.error("WhatsApp notification error:", err));
+        getWasenderSettings().then(settings => 
+          notifyShiftStart({
+            fullName: `${user.firstName} ${user.lastName}`,
+            department: user.department || "Not Assigned"
+          }, settings)
+        ).catch(err => console.error("WhatsApp notification error:", err));
       }
       
       res.json({ 
@@ -992,13 +1005,16 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       const totalBreakMinutes = morningBreaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
       
       if (user) {
-        notifyShiftEnd(
-          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
-          new Date(shift.morningClockIn),
-          workMinutes - totalBreakMinutes,
-          morningBreaks.length,
-          totalBreakMinutes,
-          shift.morningLateMinutes || 0
+        getWasenderSettings().then(settings =>
+          notifyShiftEnd(
+            { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+            new Date(shift.morningClockIn!),
+            workMinutes - totalBreakMinutes,
+            morningBreaks.length,
+            totalBreakMinutes,
+            shift.morningLateMinutes || 0,
+            settings
+          )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
       
@@ -1080,10 +1096,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       if (user) {
-        notifyShiftStart({
-          fullName: `${user.firstName} ${user.lastName}`,
-          department: user.department || "Not Assigned"
-        }).catch(err => console.error("WhatsApp notification error:", err));
+        getWasenderSettings().then(settings =>
+          notifyShiftStart({
+            fullName: `${user.firstName} ${user.lastName}`,
+            department: user.department || "Not Assigned"
+          }, settings)
+        ).catch(err => console.error("WhatsApp notification error:", err));
       }
       
       res.json({
@@ -1168,13 +1186,16 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       const totalBreakMinutes = eveningBreaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
       
       if (user) {
-        notifyShiftEnd(
-          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
-          new Date(shift.eveningClockIn),
-          workMinutes - totalBreakMinutes,
-          eveningBreaks.length,
-          totalBreakMinutes,
-          shift.eveningLateMinutes || 0
+        getWasenderSettings().then(settings =>
+          notifyShiftEnd(
+            { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+            new Date(shift.eveningClockIn!),
+            workMinutes - totalBreakMinutes,
+            eveningBreaks.length,
+            totalBreakMinutes,
+            shift.eveningLateMinutes || 0,
+            settings
+          )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
       
@@ -1277,9 +1298,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       if (user) {
-        notifyBreakStart(
-          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
-          type
+        getWasenderSettings().then(settings =>
+          notifyBreakStart(
+            { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+            type,
+            settings
+          )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
       
@@ -1335,10 +1359,13 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       if (user) {
-        notifyBreakEnd(
-          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
-          activeBreak.type,
-          durationMinutes
+        getWasenderSettings().then(settings =>
+          notifyBreakEnd(
+            { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+            activeBreak.type,
+            durationMinutes,
+            settings
+          )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
       
@@ -1822,9 +1849,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       if (user) {
-        notifyDailyReportSubmitted(
-          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
-          reportData.workDetails
+        getWasenderSettings().then(settings =>
+          notifyDailyReportSubmitted(
+            { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+            reportData.workDetails,
+            settings
+          )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
       

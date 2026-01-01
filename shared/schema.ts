@@ -109,6 +109,7 @@ export const wasenderConfig = pgTable("wasender_config", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   instanceId: text("instance_id"),
   apiToken: text("api_token"), // Encrypted/stored securely
+  groupId: text("group_id"), // The 'to' parameter for WhatsApp group
   isActive: boolean("is_active").default(false),
   lastTested: timestamp("last_tested"),
   updatedAt: timestamp("updated_at").defaultNow(),

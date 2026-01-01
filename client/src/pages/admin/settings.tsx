@@ -52,6 +52,7 @@ import type { WasenderConfig } from "@shared/schema";
 const wasenderFormSchema = z.object({
   instanceId: z.string().min(1, "Instance ID is required"),
   apiToken: z.string().min(1, "API Token is required"),
+  groupId: z.string().min(1, "Group ID is required"),
   isActive: z.boolean().default(false),
 });
 
@@ -70,6 +71,7 @@ export default function SettingsPage() {
     defaultValues: {
       instanceId: wasenderConfig?.instanceId || "",
       apiToken: "",
+      groupId: wasenderConfig?.groupId || "",
       isActive: wasenderConfig?.isActive || false,
     },
   });
@@ -119,21 +121,23 @@ export default function SettingsPage() {
     wasenderForm.reset({
       instanceId: wasenderConfig?.instanceId || "",
       apiToken: "",
+      groupId: wasenderConfig?.groupId || "",
       isActive: wasenderConfig?.isActive || false,
     });
     setWasenderDialogOpen(true);
   };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Settings</h1>
-        <p className="text-muted-foreground text-sm">
-          Configure your attendance system
-        </p>
-      </div>
+    <div className="h-full overflow-y-auto">
+      <div className="space-y-6 p-1">
+        <div>
+          <h1 className="text-2xl font-bold" data-testid="text-page-title">Settings</h1>
+          <p className="text-muted-foreground text-sm">
+            Configure your attendance system
+          </p>
+        </div>
 
-      <div className="grid gap-6">
+        <div className="grid gap-6">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -170,7 +174,7 @@ export default function SettingsPage() {
                     </div>
                     <p className="text-sm text-muted-foreground">
                       {wasenderConfig?.instanceId 
-                        ? `Instance: ${wasenderConfig.instanceId}`
+                        ? `Instance: ${wasenderConfig.instanceId}${wasenderConfig?.groupId ? ` | Group: ${wasenderConfig.groupId}` : ''}`
                         : "No instance configured"
                       }
                     </p>
@@ -252,6 +256,26 @@ export default function SettingsPage() {
                                   </FormControl>
                                   <FormDescription>
                                     Your WASENDER API authentication token
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            <FormField
+                              control={wasenderForm.control}
+                              name="groupId"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>Group ID (To)</FormLabel>
+                                  <FormControl>
+                                    <Input 
+                                      placeholder="WhatsApp group ID" 
+                                      {...field} 
+                                      data-testid="input-group-id" 
+                                    />
+                                  </FormControl>
+                                  <FormDescription>
+                                    The WhatsApp group ID to send notifications to (used as 'to' parameter)
                                   </FormDescription>
                                   <FormMessage />
                                 </FormItem>
@@ -468,11 +492,12 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <div className="flex justify-end">
-          <Button data-testid="button-save-settings">
-            <Settings className="h-4 w-4 mr-2" />
-            Save Settings
-          </Button>
+          <div className="flex justify-end">
+            <Button data-testid="button-save-settings">
+              <Settings className="h-4 w-4 mr-2" />
+              Save Settings
+            </Button>
+          </div>
         </div>
       </div>
     </div>
