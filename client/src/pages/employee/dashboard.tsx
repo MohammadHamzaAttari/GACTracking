@@ -1059,7 +1059,7 @@ export default function EmployeeDashboard() {
             </div>
             <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-800/50">
               <button onClick={() => setActiveTab("morning")} className={cn("flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all", activeTab === "morning" ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}><Sun className="w-4 h-4" />Morning</button>
-              <button onClick={() => setActiveTab("evening")} className={cn("flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all", activeTab === "evening" ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}><Moon className="w-4 h-4" />Evening</button>
+              <button disabled className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium opacity-50 cursor-not-allowed text-slate-400"><Moon className="w-4 h-4" />Evening</button>
             </div>
           </div>
         </div>
