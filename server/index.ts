@@ -71,8 +71,9 @@ async function ensureAdminExists() {
       .where(eq(users.username, "admin"))
       .limit(1);
 
+    const hashedPassword = await bcrypt.hash("admin123", 10);
+
     if (existingAdmin.length === 0) {
-      const hashedPassword = await bcrypt.hash("admin123", 10);
       await db.insert(users).values({
         username: "admin",
         password: hashedPassword,
@@ -85,6 +86,12 @@ async function ensureAdminExists() {
         isActive: true,
       });
       log("Default admin user created (admin/admin123)");
+    } else {
+      // Always update password to ensure it matches
+      await db.update(users)
+        .set({ password: hashedPassword })
+        .where(eq(users.username, "admin"));
+      log("Admin password reset to default");
     }
   } catch (error) {
     console.error("Failed to ensure admin exists:", error);
