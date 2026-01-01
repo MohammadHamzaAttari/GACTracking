@@ -51,11 +51,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -77,11 +72,17 @@ function safeParseArray(value: any): string[] {
   return [];
 }
 
-// Generate month options
+// FIX: Use local time for current month calculation
+function getCurrentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Generate month options (last 24 months for history)
 function getMonthOptions() {
   const options = [];
   const now = new Date();
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 24; i++) {
     const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
     options.push({
       value: format(date, "yyyy-MM"),
@@ -109,15 +110,15 @@ function getAvatarGradient(name: string) {
 }
 
 // Mini Stat Pill
-function StatPill({ 
-  icon: Icon, 
-  value, 
-  label, 
-  color 
-}: { 
-  icon: any; 
-  value: number; 
-  label: string; 
+function StatPill({
+  icon: Icon,
+  value,
+  label,
+  color
+}: {
+  icon: any;
+  value: number;
+  label: string;
   color: string;
 }) {
   return (
@@ -133,17 +134,17 @@ function StatPill({
 }
 
 // Report Card Component
-function ReportCard({ 
-  report, 
-  onClick 
-}: { 
-  report: any; 
+function ReportCard({
+  report,
+  onClick
+}: {
+  report: any;
   onClick: () => void;
 }) {
   const videos = safeParseArray(report.loomVideos);
   const refs = safeParseArray(report.references);
   const reportDate = parseISO(report.date);
-  
+
   return (
     <button
       onClick={onClick}
@@ -164,7 +165,7 @@ function ReportCard({
             {getInitials(report.user?.firstName || "", report.user?.lastName || "")}
           </AvatarFallback>
         </Avatar>
-        
+
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <div>
@@ -227,13 +228,13 @@ function ReportCard({
 }
 
 // Department Group Component
-function DepartmentGroup({ 
-  department, 
-  reports, 
-  onViewReport 
-}: { 
-  department: string; 
-  reports: any[]; 
+function DepartmentGroup({
+  department,
+  reports,
+  onViewReport
+}: {
+  department: string;
+  reports: any[];
   onViewReport: (report: any) => void;
 }) {
   return (
@@ -268,24 +269,48 @@ function DepartmentGroup({
 
 // Main Component
 export default function AdminDailyReportsPage() {
-  const currentMonth = new Date().toISOString().substring(0, 7);
-  
+  // FIX: Use local time for current month
+  const currentMonth = getCurrentMonth();
+
   // States
   const [selectedMonth, setSelectedMonth] = useState(currentMonth);
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedDepartment, setSelectedDepartment] = useState("all");
+  const [selectedEmployee, setSelectedEmployee] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [groupByDepartment, setGroupByDepartment] = useState(true);
   const [selectedReport, setSelectedReport] = useState<any>(null);
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
 
-  // Fetch reports
-  const { data: reports = [], isLoading, refetch } = useQuery({
-    queryKey: ["admin-daily-reports", selectedMonth],
+  // Fetch employees for filter dropdown
+  const { data: employees = [] } = useQuery({
+    queryKey: ["employees"],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/reports/daily?month=${selectedMonth}`);
-      if (!res.ok) throw new Error("Failed to fetch reports");
+      const res = await apiRequest("GET", "/api/admin/employees");
+      if (!res.ok) throw new Error("Failed to fetch employees");
       return res.json();
+    },
+  });
+
+  // Fetch reports with improved error handling
+  const { data: reports = [], isLoading, refetch, error } = useQuery({
+    queryKey: ["admin-daily-reports", selectedMonth, selectedEmployee],
+    queryFn: async () => {
+      let url = `/api/admin/reports/daily?month=${selectedMonth}`;
+      if (selectedEmployee !== "all") {
+        url += `&userId=${selectedEmployee}`;
+      }
+      
+      console.log("Fetching reports:", url);
+      
+      const res = await apiRequest("GET", url);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to fetch reports");
+      }
+      const data = await res.json();
+      console.log("Received reports:", data.length);
+      return data;
     },
   });
 
@@ -298,7 +323,7 @@ export default function AdminDailyReportsPage() {
     return Array.from(depts).sort();
   }, [reports]);
 
-  // Get unique dates
+  // Get unique dates for the selected month
   const dates = useMemo(() => {
     const dateSet = new Set<string>();
     reports.forEach((r: any) => dateSet.add(r.date));
@@ -322,7 +347,7 @@ export default function AdminDailyReportsPage() {
       filtered = filtered.filter((r: any) => r.user?.department === selectedDepartment);
     }
 
-    if (selectedDate) {
+    if (selectedDate && selectedDate !== "all_dates") {
       filtered = filtered.filter((r: any) => r.date === selectedDate);
     }
 
@@ -334,7 +359,7 @@ export default function AdminDailyReportsPage() {
   // Group by department
   const groupedReports = useMemo(() => {
     if (!groupByDepartment) return { "All Reports": filteredReports };
-    
+
     const groups: Record<string, any[]> = {};
     filteredReports.forEach((report: any) => {
       const dept = report.user?.department || "Unassigned";
@@ -349,10 +374,13 @@ export default function AdminDailyReportsPage() {
     const uniqueEmployees = new Set(reports.map((r: any) => r.userId)).size;
     const withVideos = reports.filter((r: any) => safeParseArray(r.loomVideos).length > 0).length;
     const withRefs = reports.filter((r: any) => safeParseArray(r.references).length > 0).length;
-    const todayReports = reports.filter((r: any) => 
-      r.date === new Date().toISOString().split("T")[0]
-    ).length;
     
+    // Get today's date in local format
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    
+    const todayReports = reports.filter((r: any) => r.date === todayStr).length;
+
     return { 
       total: reports.length, 
       uniqueEmployees, 
@@ -371,9 +399,29 @@ export default function AdminDailyReportsPage() {
     setSearchQuery("");
     setSelectedDepartment("all");
     setSelectedDate("");
+    setSelectedEmployee("all");
   };
 
-  const hasActiveFilters = searchQuery || selectedDepartment !== "all" || selectedDate;
+  const hasActiveFilters = searchQuery || selectedDepartment !== "all" || selectedDate || selectedEmployee !== "all";
+
+  // Error display
+  if (error) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-14 h-14 rounded-2xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center mx-auto mb-4">
+            <X className="h-6 w-6 text-red-500" />
+          </div>
+          <p className="font-medium text-slate-900 dark:text-white mb-1">Error loading reports</p>
+          <p className="text-sm text-slate-500 mb-4">{(error as Error).message}</p>
+          <Button onClick={() => refetch()} variant="outline">
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -413,7 +461,7 @@ export default function AdminDailyReportsPage() {
 
         {/* Month Filter */}
         <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-          <SelectTrigger className="h-8 w-[130px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
+          <SelectTrigger className="h-8 w-[140px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
             <Calendar className="h-3 w-3 mr-1.5 text-slate-400" />
             <SelectValue />
           </SelectTrigger>
@@ -423,6 +471,24 @@ export default function AdminDailyReportsPage() {
                 {option.label}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+
+        {/* Employee Filter */}
+        <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
+          <SelectTrigger className="h-8 w-[150px] text-xs bg-white dark:bg-slate-800 border-0 shadow-sm">
+            <User className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue placeholder="All Employees" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Employees</SelectItem>
+            {employees
+              .filter((e: any) => e.role !== 'admin')
+              .map((emp: any) => (
+                <SelectItem key={emp.id} value={emp.id}>
+                  {emp.firstName} {emp.lastName}
+                </SelectItem>
+              ))}
           </SelectContent>
         </Select>
 
@@ -498,6 +564,9 @@ export default function AdminDailyReportsPage() {
           {selectedDate && selectedDate !== "all_dates" && (
             <span> for {format(parseISO(selectedDate), "MMMM d, yyyy")}</span>
           )}
+          {selectedEmployee !== "all" && (
+            <span> from selected employee</span>
+          )}
         </p>
       </div>
 
@@ -513,6 +582,11 @@ export default function AdminDailyReportsPage() {
               <p className="text-sm text-slate-500">
                 {hasActiveFilters ? "Try adjusting your filters" : "No reports for this period"}
               </p>
+              {hasActiveFilters && (
+                <Button variant="outline" size="sm" className="mt-4" onClick={clearFilters}>
+                  Clear Filters
+                </Button>
+              )}
             </div>
           </div>
         ) : groupByDepartment ? (

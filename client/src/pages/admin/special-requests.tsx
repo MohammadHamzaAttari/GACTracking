@@ -17,12 +17,14 @@ import {
   Search,
   Building2,
   SlidersHorizontal,
-  ChevronDown,
   MoreHorizontal,
   CheckCircle2,
   Sparkles,
   ArrowUpRight,
   Circle,
+  Calendar,
+  CalendarDays,
+  User,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,9 +34,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -46,7 +46,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -58,6 +57,27 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+
+// Get current month in LOCAL time
+function getCurrentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Generate month options (last 24 months)
+function getMonthOptions() {
+  const options = [];
+  const now = new Date();
+  
+  for (let i = -2; i < 24; i++) {
+    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    options.push({
+      value: format(date, "yyyy-MM"),
+      label: format(date, "MMMM yyyy"),
+    });
+  }
+  return options;
+}
 
 // Status configuration
 const statusConfig: Record<string, { 
@@ -241,15 +261,30 @@ function RequestItem({
 export default function AdminSpecialRequestsPage() {
   const { toast } = useToast();
   
+  // Use local time for current month
+  const currentMonth = getCurrentMonth();
+  
   // States
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [selectedMonth, setSelectedMonth] = useState(currentMonth);
+  const [selectedDate, setSelectedDate] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDepartment, setSelectedDepartment] = useState("all");
+  const [selectedEmployee, setSelectedEmployee] = useState("all");
   const [sortBy, setSortBy] = useState<"newest" | "oldest">("newest");
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [responseComment, setResponseComment] = useState("");
   const [responseStatus, setResponseStatus] = useState("");
+
+  // Fetch employees
+  const { data: employees = [] } = useQuery({
+    queryKey: ["employees"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/employees");
+      if (!res.ok) throw new Error("Failed to fetch employees");
+      return res.json();
+    },
+  });
 
   // Fetch requests
   const { data: rawRequests = [], isLoading, refetch: refetchRequests } = useQuery({
@@ -284,6 +319,16 @@ export default function AdminSpecialRequestsPage() {
     return Array.from(depts).sort();
   }, [rawRequests]);
 
+  // Get unique dates for selected month
+  const dates = useMemo(() => {
+    const dateSet = new Set<string>();
+    rawRequests.forEach((r: any) => {
+      const date = new Date(r.createdAt).toISOString().split("T")[0];
+      dateSet.add(date);
+    });
+    return Array.from(dateSet).sort().reverse();
+  }, [rawRequests]);
+
   // Filtered & Sorted
   const filteredRequests = useMemo(() => {
     let filtered = [...rawRequests];
@@ -294,6 +339,17 @@ export default function AdminSpecialRequestsPage() {
 
     if (selectedDepartment !== "all") {
       filtered = filtered.filter((r: any) => r.user?.department === selectedDepartment);
+    }
+
+    if (selectedEmployee !== "all") {
+      filtered = filtered.filter((r: any) => r.userId === selectedEmployee);
+    }
+
+    if (selectedDate && selectedDate !== "all_dates") {
+      filtered = filtered.filter((r: any) => {
+        const requestDate = new Date(r.createdAt).toISOString().split("T")[0];
+        return requestDate === selectedDate;
+      });
     }
 
     if (searchQuery.trim()) {
@@ -311,7 +367,7 @@ export default function AdminSpecialRequestsPage() {
     });
 
     return filtered;
-  }, [rawRequests, selectedStatus, selectedDepartment, searchQuery, sortBy]);
+  }, [rawRequests, selectedStatus, selectedDepartment, selectedEmployee, selectedDate, searchQuery, sortBy]);
 
   const selectedRequest = filteredRequests.find((r: any) => r.id === selectedRequestId);
 
@@ -379,9 +435,11 @@ export default function AdminSpecialRequestsPage() {
     setSearchQuery("");
     setSelectedDepartment("all");
     setSelectedStatus("all");
+    setSelectedEmployee("all");
+    setSelectedDate("");
   };
 
-  const hasActiveFilters = searchQuery || selectedDepartment !== "all" || selectedStatus !== "all";
+  const hasActiveFilters = searchQuery || selectedDepartment !== "all" || selectedStatus !== "all" || selectedEmployee !== "all" || selectedDate;
 
   // Loading
   if (isLoading) {
@@ -441,7 +499,7 @@ export default function AdminSpecialRequestsPage() {
         <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
 
         {/* Search */}
-        <div className="relative flex-1 min-w-[180px] max-w-[260px]">
+        <div className="relative flex-1 min-w-[180px] max-w-[220px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
             placeholder="Search..."
@@ -451,9 +509,62 @@ export default function AdminSpecialRequestsPage() {
           />
         </div>
 
+        {/* Month Filter */}
+        <Select value={selectedMonth} onValueChange={(value) => {
+          setSelectedMonth(value);
+          setSelectedDate(""); // Reset date when month changes
+        }}>
+          <SelectTrigger className="h-8 w-[140px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0">
+            <CalendarDays className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {getMonthOptions().map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Date Filter */}
+        <Select value={selectedDate} onValueChange={setSelectedDate}>
+          <SelectTrigger className="h-8 w-[100px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0">
+            <Calendar className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue placeholder="All Days" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all_dates">All Days</SelectItem>
+            {dates.map((date) => (
+              <SelectItem key={date} value={date}>
+                {format(parseISO(date), "MMM d")}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Employee Filter */}
+        <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
+          <SelectTrigger className="h-8 w-[140px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0">
+            <User className="h-3 w-3 mr-1.5 text-slate-400" />
+            <SelectValue placeholder="All Employees" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Employees</SelectItem>
+            {employees
+              .filter((e: any) => e.role !== 'admin')
+              .sort((a: any, b: any) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`))
+              .map((emp: any) => (
+                <SelectItem key={emp.id} value={emp.id}>
+                  {emp.firstName} {emp.lastName}
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+
         {/* Department */}
         <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
-          <SelectTrigger className="h-8 w-[140px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0">
+          <SelectTrigger className="h-8 w-[130px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0">
             <Building2 className="h-3 w-3 mr-1.5 text-slate-400" />
             <SelectValue placeholder="Department" />
           </SelectTrigger>
@@ -465,18 +576,11 @@ export default function AdminSpecialRequestsPage() {
           </SelectContent>
         </Select>
 
-        {/* Month */}
-        <Input
-          type="month"
-          value={selectedMonth}
-          onChange={(e) => setSelectedMonth(e.target.value)}
-          className="h-8 w-[130px] text-xs bg-slate-50 dark:bg-slate-800/50 border-0"
-        />
-
         {/* Actions */}
         <div className="flex items-center gap-1 ml-auto">
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" onClick={clearFilters} className="h-8 text-xs">
+              <X className="h-3 w-3 mr-1" />
               Clear
             </Button>
           )}
@@ -491,7 +595,17 @@ export default function AdminSpecialRequestsPage() {
         </div>
       </div>
 
-      {/* Main Content - Maximum Space */}
+      {/* Results Info */}
+      <div className="flex items-center justify-between px-1">
+        <p className="text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">{filteredRequests.length}</span> requests
+          {selectedDate && selectedDate !== "all_dates" && (
+            <span> for {format(parseISO(selectedDate), "MMMM d, yyyy")}</span>
+          )}
+        </p>
+      </div>
+
+      {/* Main Content */}
       <div className="flex-1 min-h-0">
         {filteredRequests.length === 0 ? (
           <div className="h-full flex items-center justify-center">
@@ -541,7 +655,7 @@ export default function AdminSpecialRequestsPage() {
               </Card>
             </div>
 
-            {/* Conversation Panel - Maximum Space */}
+            {/* Conversation Panel */}
             <div className="col-span-12 lg:col-span-8 xl:col-span-9 min-h-0">
               {selectedRequest ? (
                 <Card className="h-full flex flex-col overflow-hidden border-0 shadow-sm bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl">
@@ -576,7 +690,7 @@ export default function AdminSpecialRequestsPage() {
                             {selectedRequest.user?.firstName} {selectedRequest.user?.lastName}
                             {selectedRequest.user?.department && ` • ${selectedRequest.user.department}`}
                             {" • "}
-                            {format(new Date(selectedRequest.createdAt), "MMM d, h:mm a")}
+                            {format(new Date(selectedRequest.createdAt), "MMM d, yyyy 'at' h:mm a")}
                           </p>
                         </div>
                       </div>
@@ -655,7 +769,7 @@ export default function AdminSpecialRequestsPage() {
                     </div>
                   </div>
 
-                  {/* Messages - Maximum Space */}
+                  {/* Messages */}
                   <ScrollArea className="flex-1">
                     <div className="p-4 space-y-4">
                       {/* Original Request */}
@@ -757,7 +871,7 @@ export default function AdminSpecialRequestsPage() {
                     </div>
                   </ScrollArea>
 
-                  {/* Response Input - Compact */}
+                  {/* Response Input */}
                   <div className="p-3 border-t border-slate-100 dark:border-slate-800 shrink-0 bg-slate-50/50 dark:bg-slate-800/30">
                     {selectedRequest.status === "resolved" ? (
                       <div className="flex items-center justify-center gap-2 py-2 text-sm text-slate-500">

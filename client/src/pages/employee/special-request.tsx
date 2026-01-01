@@ -1,7 +1,7 @@
 // client/src/pages/employee/special-request.tsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
 import {
   Send,
   MessageCircle,
@@ -11,9 +11,15 @@ import {
   Clock,
   CheckCircle,
   XCircle,
-  AlertCircle,
   RotateCcw,
   Loader2,
+  Calendar,
+  CalendarDays,
+  Search,
+  X,
+  Filter,
+  ChevronRight,
+  Sparkles,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,7 +29,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
@@ -33,72 +38,208 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
-const statusConfig: Record<string, { label: string; color: string; icon: any; bgColor: string }> = {
+// Get current month in LOCAL time
+function getCurrentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Generate year options
+function getYearOptions() {
+  const years = [];
+  const currentYear = new Date().getFullYear();
+  for (let year = currentYear + 1; year >= currentYear - 5; year--) {
+    years.push(year);
+  }
+  return years;
+}
+
+// Generate month options for a specific year
+function getMonthOptionsForYear(year: number) {
+  const months = [];
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  for (let month = 0; month < 12; month++) {
+    if (year === currentYear && month > currentMonth + 1) continue;
+    
+    const date = new Date(year, month, 1);
+    months.push({
+      value: String(month + 1).padStart(2, '0'),
+      label: format(date, "MMMM"),
+    });
+  }
+  return months;
+}
+
+const statusConfig: Record<string, { label: string; color: string; icon: any; bgColor: string; dotColor: string }> = {
   sent_for_approval: {
     label: "Pending",
     color: "text-blue-600 dark:text-blue-400",
     bgColor: "bg-blue-100 dark:bg-blue-900/30",
+    dotColor: "bg-blue-500",
     icon: Clock,
   },
   approved: {
     label: "Approved",
     color: "text-green-600 dark:text-green-400",
     bgColor: "bg-green-100 dark:bg-green-900/30",
+    dotColor: "bg-green-500",
     icon: CheckCircle,
   },
   not_approved: {
     label: "Rejected",
     color: "text-red-600 dark:text-red-400",
     bgColor: "bg-red-100 dark:bg-red-900/30",
+    dotColor: "bg-red-500",
     icon: XCircle,
   },
   revision: {
     label: "Revision",
     color: "text-yellow-600 dark:text-yellow-400",
     bgColor: "bg-yellow-100 dark:bg-yellow-900/30",
+    dotColor: "bg-yellow-500",
     icon: RotateCcw,
   },
   resolved: {
     label: "Resolved",
     color: "text-gray-600 dark:text-gray-400",
     bgColor: "bg-gray-100 dark:bg-gray-900/30",
+    dotColor: "bg-gray-500",
     icon: CheckCircle,
   },
 };
 
+// Stat Pill Component
+function StatPill({
+  label,
+  value,
+  dotColor,
+  isActive,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  dotColor: string;
+  isActive?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-all",
+        "hover:scale-105 active:scale-95",
+        isActive
+          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-lg"
+          : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700"
+      )}
+    >
+      <span className={cn("w-2 h-2 rounded-full", dotColor)} />
+      <span>{label}</span>
+      <span className={cn(
+        "font-bold",
+        isActive ? "text-white dark:text-slate-900" : "text-slate-900 dark:text-white"
+      )}>
+        {value}
+      </span>
+    </button>
+  );
+}
+
 export default function SpecialRequestPage() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const currentMonth = new Date().toISOString().substring(0, 7);
+  
+  // Local time calculations
+  const currentMonth = getCurrentMonth();
+  const currentYear = new Date().getFullYear();
+  const currentMonthNum = new Date().getMonth() + 1;
 
+  // Filter states
+  const [selectedYear, setSelectedYear] = useState(currentYear);
+  const [selectedMonthNum, setSelectedMonthNum] = useState(String(currentMonthNum).padStart(2, '0'));
+  const [selectedStatus, setSelectedStatus] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  
+  // Computed month string for API
+  const selectedMonth = `${selectedYear}-${selectedMonthNum}`;
+
+  // UI states
   const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
   const [commentText, setCommentText] = useState("");
   const [newRequestOpen, setNewRequestOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
 
-  // Fetch requests
+  // Fetch requests for selected month
   const {
     data: myRequests = [],
     isLoading,
     refetch: refetchRequests,
+    error: requestsError,
   } = useQuery({
-    queryKey: ["my-special-requests", currentMonth],
+    queryKey: ["my-special-requests", selectedMonth],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/requests/special/my?month=${currentMonth}`);
-      if (!res.ok) throw new Error("Failed to fetch requests");
-      return res.json();
+      console.log("Employee: Fetching special requests for month:", selectedMonth);
+      const res = await apiRequest("GET", `/api/requests/special/my?month=${selectedMonth}`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        console.error("Failed to fetch requests:", errorData);
+        throw new Error(errorData.error || "Failed to fetch requests");
+      }
+      const data = await res.json();
+      console.log("Employee: Received requests:", data.length, data);
+      return data;
     },
+    staleTime: 0,
     refetchInterval: 10000,
   });
 
-  // Fetch comments
+  // Filter and sort requests
+  const filteredRequests = useMemo(() => {
+    let filtered = [...myRequests];
+
+    // Filter by status
+    if (selectedStatus !== "all") {
+      filtered = filtered.filter((r: any) => r.status === selectedStatus);
+    }
+
+    // Filter by search query
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter((r: any) =>
+        r.title?.toLowerCase().includes(query) ||
+        r.details?.toLowerCase().includes(query)
+      );
+    }
+
+    // Sort by date (newest first)
+    return filtered.sort((a: any, b: any) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [myRequests, selectedStatus, searchQuery]);
+
+  // Fetch comments for selected request
   const {
     data: comments = [],
     refetch: refetchComments,
@@ -115,7 +256,16 @@ export default function SpecialRequestPage() {
     refetchInterval: 5000,
   });
 
-  const selectedRequest = myRequests.find((r: any) => r.id === selectedRequestId);
+  const selectedRequest = filteredRequests.find((r: any) => r.id === selectedRequestId);
+
+  // Stats for current selection
+  const stats = useMemo(() => ({
+    total: myRequests.length,
+    pending: myRequests.filter((r: any) => r.status === "sent_for_approval").length,
+    approved: myRequests.filter((r: any) => r.status === "approved").length,
+    rejected: myRequests.filter((r: any) => r.status === "not_approved").length,
+    revision: myRequests.filter((r: any) => r.status === "revision").length,
+  }), [myRequests]);
 
   // Create request mutation
   const createMutation = useMutation({
@@ -123,7 +273,7 @@ export default function SpecialRequestPage() {
       const res = await apiRequest("POST", "/api/requests/special", {
         title,
         details,
-        month: currentMonth,
+        month: currentMonth, // Always use current month for new requests
       });
       if (!res.ok) throw new Error(await res.text());
       return res.json();
@@ -133,6 +283,10 @@ export default function SpecialRequestPage() {
       setTitle("");
       setDetails("");
       setNewRequestOpen(false);
+      // Reset to current month to see the new request
+      setSelectedYear(currentYear);
+      setSelectedMonthNum(String(currentMonthNum).padStart(2, '0'));
+      queryClient.invalidateQueries({ queryKey: ["my-special-requests"] });
       refetchRequests();
     },
     onError: (error: any) => {
@@ -161,27 +315,40 @@ export default function SpecialRequestPage() {
     },
   });
 
-  // Auto-select first request
+  // Auto-select first request when list changes
   useEffect(() => {
-    if (myRequests.length > 0 && !selectedRequestId) {
-      setSelectedRequestId(myRequests[0].id);
+    if (filteredRequests.length > 0 && (!selectedRequestId || !filteredRequests.find((r: any) => r.id === selectedRequestId))) {
+      setSelectedRequestId(filteredRequests[0].id);
+    } else if (filteredRequests.length === 0) {
+      setSelectedRequestId(null);
     }
-  }, [myRequests, selectedRequestId]);
+  }, [filteredRequests, selectedRequestId]);
 
-  // Stats
-  const stats = {
-    total: myRequests.length,
-    pending: myRequests.filter((r: any) => r.status === "sent_for_approval").length,
-    approved: myRequests.filter((r: any) => r.status === "approved").length,
-    rejected: myRequests.filter((r: any) => r.status === "not_approved").length,
+  // Clear filters
+  const clearFilters = () => {
+    setSearchQuery("");
+    setSelectedStatus("all");
+  };
+
+  const hasActiveFilters = searchQuery || selectedStatus !== "all";
+
+  // Handle year/month change
+  const handleYearChange = (year: string) => {
+    setSelectedYear(Number(year));
+    setSelectedRequestId(null);
+  };
+
+  const handleMonthChange = (month: string) => {
+    setSelectedMonthNum(month);
+    setSelectedRequestId(null);
   };
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-          <p className="text-sm text-slate-500">Loading requests...</p>
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Loading requests...</p>
         </div>
       </div>
     );
@@ -189,142 +356,229 @@ export default function SpecialRequestPage() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="p-6 space-y-6 max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold">Special Requests</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Submit and track your requests
-            </p>
+      <div className="p-4 sm:p-6 space-y-4 max-w-7xl mx-auto">
+        {/* Compact Filter Bar */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Status Pills */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <StatPill
+              label="All"
+              value={stats.total}
+              dotColor="bg-slate-400"
+              isActive={selectedStatus === "all"}
+              onClick={() => setSelectedStatus("all")}
+            />
+            <StatPill
+              label="Pending"
+              value={stats.pending}
+              dotColor="bg-blue-500"
+              isActive={selectedStatus === "sent_for_approval"}
+              onClick={() => setSelectedStatus("sent_for_approval")}
+            />
+            <StatPill
+              label="Approved"
+              value={stats.approved}
+              dotColor="bg-green-500"
+              isActive={selectedStatus === "approved"}
+              onClick={() => setSelectedStatus("approved")}
+            />
+            <StatPill
+              label="Rejected"
+              value={stats.rejected}
+              dotColor="bg-red-500"
+              isActive={selectedStatus === "not_approved"}
+              onClick={() => setSelectedStatus("not_approved")}
+            />
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => refetchRequests()}>
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh
-            </Button>
-            <Button onClick={() => setNewRequestOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              New Request
+
+          <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+          {/* Search */}
+          <div className="relative flex-1 min-w-[150px] max-w-[200px]">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+            <Input
+              placeholder="Search requests..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 pl-8 text-xs bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700"
+            />
+          </div>
+
+          {/* Year Filter */}
+          <Select value={String(selectedYear)} onValueChange={handleYearChange}>
+            <SelectTrigger className="h-8 w-[90px] text-xs bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+              <CalendarDays className="h-3 w-3 mr-1.5 text-slate-400" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {getYearOptions().map((year) => (
+                <SelectItem key={year} value={String(year)}>
+                  {year}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Month Filter */}
+          <Select value={selectedMonthNum} onValueChange={handleMonthChange}>
+            <SelectTrigger className="h-8 w-[120px] text-xs bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+              <Calendar className="h-3 w-3 mr-1.5 text-slate-400" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {getMonthOptionsForYear(selectedYear).map((month) => (
+                <SelectItem key={month.value} value={month.value}>
+                  {month.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Actions */}
+          <div className="flex items-center gap-1 ml-auto">
+            {hasActiveFilters && (
+              <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={clearFilters}>
+                <X className="h-3 w-3 mr-1" />
+                Clear
+              </Button>
+            )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => refetchRequests()}
+                  disabled={isLoading}
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Refresh</TooltipContent>
+            </Tooltip>
+            <Button size="sm" className="h-8" onClick={() => setNewRequestOpen(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              New
             </Button>
           </div>
         </div>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800">
-                  <FileText className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Total</p>
-                  <p className="text-xl font-bold">{stats.total}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-100 dark:bg-blue-900/30">
-                  <Clock className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Pending</p>
-                  <p className="text-xl font-bold text-blue-600">{stats.pending}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-green-100 dark:bg-green-900/30">
-                  <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400" />
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Approved</p>
-                  <p className="text-xl font-bold text-green-600">{stats.approved}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-red-100 dark:bg-red-900/30">
-                  <XCircle className="w-4 h-4 text-red-600 dark:text-red-400" />
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Rejected</p>
-                  <p className="text-xl font-bold text-red-600">{stats.rejected}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+        {/* Results Info */}
+        <div className="flex items-center justify-between px-1">
+          <p className="text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">{filteredRequests.length}</span> requests
+            {" in "}
+            <span className="font-medium">{format(parseISO(selectedMonth + "-01"), "MMMM yyyy")}</span>
+          </p>
         </div>
+
+        {/* Error State */}
+        {requestsError && (
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertDescription className="flex items-center justify-between">
+              <span>{(requestsError as Error).message}</span>
+              <Button variant="outline" size="sm" onClick={() => refetchRequests()}>
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
 
         {/* Main Content */}
-        {myRequests.length === 0 ? (
+        {filteredRequests.length === 0 ? (
           <Card className="py-12">
             <div className="text-center">
-              <FileText className="w-12 h-12 mx-auto text-muted-foreground/50 mb-4" />
-              <h3 className="text-lg font-medium mb-2">No Requests Yet</h3>
-              <p className="text-muted-foreground mb-4">
-                You haven't submitted any special requests this month.
+              <FileText className="w-12 h-12 mx-auto text-muted-foreground/30 mb-4" />
+              <h3 className="text-lg font-medium mb-2">No Requests Found</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                {hasActiveFilters
+                  ? "Try adjusting your filters"
+                  : `No requests for ${format(parseISO(selectedMonth + "-01"), "MMMM yyyy")}`}
               </p>
-              <Button onClick={() => setNewRequestOpen(true)}>
-                <Plus className="h-4 w-4 mr-2" />
-                Create Your First Request
-              </Button>
+              <div className="flex items-center justify-center gap-2">
+                {hasActiveFilters && (
+                  <Button variant="outline" size="sm" onClick={clearFilters}>
+                    <X className="h-3 w-3 mr-1" />
+                    Clear Filters
+                  </Button>
+                )}
+                <Button onClick={() => setNewRequestOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create Request
+                </Button>
+              </div>
             </div>
           </Card>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Request List - Left Side */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            {/* Request List */}
             <div className="lg:col-span-4">
-              <Card className="h-[600px] flex flex-col">
-                <CardHeader className="pb-3 shrink-0">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <FileText className="h-4 w-4" />
-                    Your Requests
+              <Card className="h-[550px] flex flex-col border-0 shadow-sm">
+                <CardHeader className="pb-2 shrink-0 border-b">
+                  <CardTitle className="text-sm flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      <FileText className="h-4 w-4" />
+                      Requests
+                    </span>
+                    <Badge variant="secondary" className="text-[10px]">
+                      {filteredRequests.length}
+                    </Badge>
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="flex-1 p-0 overflow-hidden">
                   <ScrollArea className="h-full">
-                    <div className="p-4 space-y-2">
-                      {myRequests.map((request: any) => {
+                    <div className="p-2 space-y-1">
+                      {filteredRequests.map((request: any) => {
                         const config = statusConfig[request.status] || statusConfig.sent_for_approval;
                         const StatusIcon = config.icon;
+                        const isSelected = selectedRequestId === request.id;
+                        
                         return (
-                          <div
+                          <button
                             key={request.id}
                             onClick={() => setSelectedRequestId(request.id)}
                             className={cn(
-                              "p-4 rounded-lg border cursor-pointer transition-all hover:shadow-md",
-                              selectedRequestId === request.id
-                                ? "border-primary bg-primary/5 shadow-sm"
-                                : "border-border hover:border-primary/50"
+                              "w-full text-left p-3 rounded-lg transition-all duration-200",
+                              "hover:bg-slate-50 dark:hover:bg-slate-800/50",
+                              isSelected && "bg-primary/5 border border-primary/20 shadow-sm"
                             )}
                           >
-                            <div className="flex items-start justify-between gap-2 mb-2">
-                              <h4 className="font-medium text-sm line-clamp-1 flex-1">
-                                {request.title}
-                              </h4>
-                              <Badge variant="secondary" className={cn("shrink-0 text-xs", config.bgColor, config.color)}>
-                                <StatusIcon className="w-3 h-3 mr-1" />
-                                {config.label}
-                              </Badge>
+                            <div className="flex items-start gap-3">
+                              <div className="relative shrink-0">
+                                <div className={cn(
+                                  "w-8 h-8 rounded-lg flex items-center justify-center",
+                                  config.bgColor
+                                )}>
+                                  <StatusIcon className={cn("w-4 h-4", config.color)} />
+                                </div>
+                              </div>
+                              
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2 mb-0.5">
+                                  <h4 className="font-medium text-sm truncate">
+                                    {request.title}
+                                  </h4>
+                                  <span className="text-[10px] text-slate-400 shrink-0">
+                                    {format(new Date(request.createdAt), "MMM d")}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-slate-500 line-clamp-1 mb-1">
+                                  {request.details}
+                                </p>
+                                <Badge 
+                                  variant="secondary" 
+                                  className={cn("text-[9px] px-1.5 py-0", config.bgColor, config.color)}
+                                >
+                                  {config.label}
+                                </Badge>
+                              </div>
+                              
+                              {isSelected && (
+                                <ChevronRight className="h-4 w-4 text-primary shrink-0" />
+                              )}
                             </div>
-                            <p className="text-xs text-muted-foreground line-clamp-2 mb-2">
-                              {request.details}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {format(new Date(request.createdAt), "MMM d, yyyy")}
-                            </p>
-                          </div>
+                          </button>
                         );
                       })}
                     </div>
@@ -333,24 +587,24 @@ export default function SpecialRequestPage() {
               </Card>
             </div>
 
-            {/* Conversation Thread - Right Side */}
+            {/* Conversation Thread */}
             <div className="lg:col-span-8">
               {selectedRequest ? (
-                <Card className="h-[600px] flex flex-col">
+                <Card className="h-[550px] flex flex-col border-0 shadow-sm">
                   {/* Header */}
                   <CardHeader className="pb-3 shrink-0 border-b">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
-                        <CardTitle className="text-lg truncate">{selectedRequest.title}</CardTitle>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          Submitted on {format(new Date(selectedRequest.createdAt), "MMMM d, yyyy 'at' h:mm a")}
+                        <CardTitle className="text-base truncate">{selectedRequest.title}</CardTitle>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {format(new Date(selectedRequest.createdAt), "MMMM d, yyyy 'at' h:mm a")}
                         </p>
                       </div>
                       {(() => {
                         const config = statusConfig[selectedRequest.status];
                         const StatusIcon = config.icon;
                         return (
-                          <Badge className={cn("shrink-0", config.bgColor, config.color)}>
+                          <Badge className={cn("shrink-0 text-xs", config.bgColor, config.color)}>
                             <StatusIcon className="w-3 h-3 mr-1" />
                             {config.label}
                           </Badge>
@@ -366,7 +620,10 @@ export default function SpecialRequestPage() {
                         {/* Original Request */}
                         <div className="flex justify-end">
                           <div className="max-w-[85%] rounded-2xl rounded-tr-md bg-primary text-primary-foreground p-4">
-                            <p className="text-xs font-medium opacity-80 mb-2">Your Request</p>
+                            <p className="text-xs font-medium opacity-80 mb-2 flex items-center gap-1">
+                              <Sparkles className="w-3 h-3" />
+                              Your Request
+                            </p>
                             <p className="text-sm whitespace-pre-wrap">{selectedRequest.details}</p>
                             <p className="text-xs opacity-60 mt-2 text-right">
                               {format(new Date(selectedRequest.createdAt), "h:mm a")}
@@ -383,7 +640,7 @@ export default function SpecialRequestPage() {
                           <div className="text-center py-8">
                             <MessageCircle className="w-10 h-10 mx-auto text-muted-foreground/30 mb-2" />
                             <p className="text-sm text-muted-foreground">
-                              Waiting for admin response...
+                              Waiting for response...
                             </p>
                           </div>
                         ) : (
@@ -396,7 +653,7 @@ export default function SpecialRequestPage() {
                                 className={cn(
                                   "max-w-[85%] rounded-2xl p-4",
                                   comment.isAdminComment
-                                    ? "rounded-tl-md bg-blue-100 dark:bg-blue-900/40"
+                                    ? "rounded-tl-md bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/40 dark:to-indigo-900/40"
                                     : "rounded-tr-md bg-slate-100 dark:bg-slate-800"
                                 )}
                               >
@@ -404,7 +661,7 @@ export default function SpecialRequestPage() {
                                   "text-xs font-medium mb-2",
                                   comment.isAdminComment ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"
                                 )}>
-                                  {comment.isAdminComment ? "👔 Admin Response" : "You"}
+                                  {comment.isAdminComment ? "👔 Admin" : "You"}
                                 </p>
                                 <p className="text-sm whitespace-pre-wrap">{comment.comment}</p>
                                 
@@ -413,7 +670,7 @@ export default function SpecialRequestPage() {
                                     {(() => {
                                       const config = statusConfig[comment.statusChange];
                                       return (
-                                        <Badge className={cn("text-xs", config?.bgColor, config?.color)}>
+                                        <Badge className={cn("text-[10px]", config?.bgColor, config?.color)}>
                                           Status: {config?.label || comment.statusChange}
                                         </Badge>
                                       );
@@ -421,7 +678,7 @@ export default function SpecialRequestPage() {
                                   </div>
                                 )}
                                 
-                                <p className="text-xs text-muted-foreground mt-2 text-right">
+                                <p className="text-[10px] text-muted-foreground mt-2 text-right">
                                   {format(new Date(comment.createdAt), "MMM d, h:mm a")}
                                 </p>
                               </div>
@@ -433,27 +690,33 @@ export default function SpecialRequestPage() {
                   </CardContent>
 
                   {/* Reply Input */}
-                  <div className="p-4 border-t shrink-0">
+                  <div className="p-3 border-t shrink-0 bg-slate-50/50 dark:bg-slate-800/30">
                     {selectedRequest.status === "resolved" ? (
-                      <Alert>
+                      <Alert className="py-2">
                         <CheckCircle className="h-4 w-4" />
-                        <AlertDescription>
+                        <AlertDescription className="text-xs">
                           This request has been resolved.
                         </AlertDescription>
                       </Alert>
                     ) : (
-                      <div className="flex gap-3">
+                      <div className="flex gap-2">
                         <Textarea
                           value={commentText}
                           onChange={(e) => setCommentText(e.target.value)}
                           placeholder="Type your reply..."
-                          rows={2}
-                          className="flex-1 resize-none"
+                          rows={1}
+                          className="flex-1 resize-none text-sm min-h-[40px] max-h-[80px]"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey && commentText.trim()) {
+                              e.preventDefault();
+                              addCommentMutation.mutate();
+                            }
+                          }}
                         />
                         <Button
                           onClick={() => addCommentMutation.mutate()}
                           disabled={addCommentMutation.isPending || !commentText.trim()}
-                          className="self-end"
+                          className="self-end h-10 px-4"
                         >
                           {addCommentMutation.isPending ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
@@ -466,7 +729,7 @@ export default function SpecialRequestPage() {
                   </div>
                 </Card>
               ) : (
-                <Card className="h-[600px] flex items-center justify-center">
+                <Card className="h-[550px] flex items-center justify-center border-0 shadow-sm">
                   <div className="text-center">
                     <MessageCircle className="w-12 h-12 mx-auto text-muted-foreground/30 mb-4" />
                     <p className="text-muted-foreground">Select a request to view conversation</p>
@@ -483,7 +746,7 @@ export default function SpecialRequestPage() {
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-primary" />
-                New Special Request
+                New Request
               </DialogTitle>
               <DialogDescription>
                 Submit a request for leave, remote work, or other arrangements.
@@ -511,7 +774,7 @@ export default function SpecialRequestPage() {
                   id="details"
                   value={details}
                   onChange={(e) => setDetails(e.target.value)}
-                  placeholder="Provide complete details including dates, reasons, and any relevant information..."
+                  placeholder="Provide details including dates, reasons, and any relevant information..."
                   rows={5}
                 />
               </div>
@@ -530,7 +793,7 @@ export default function SpecialRequestPage() {
                 ) : (
                   <Send className="w-4 h-4 mr-2" />
                 )}
-                Submit Request
+                Submit
               </Button>
             </DialogFooter>
           </DialogContent>

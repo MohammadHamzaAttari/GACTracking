@@ -54,6 +54,7 @@ import {
   Moon,
   Sun,
   Sparkles,
+  Target,
 } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import { motion, AnimatePresence } from "framer-motion";
@@ -73,6 +74,13 @@ const adminNavItems = [
     icon: Users,
     gradient: "from-violet-400 to-violet-600",
     glow: "shadow-violet-500/25",
+  },
+  {
+    title: "Target Board",
+    url: "/admin/targets",
+    icon: Target,
+    gradient: "from-indigo-400 to-purple-600",
+    glow: "shadow-purple-500/25",
   },
   {
     title: "Attendance",

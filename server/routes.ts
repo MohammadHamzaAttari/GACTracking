@@ -404,7 +404,62 @@ export async function registerRoutes(
       res.json({ success: true });
     });
   });
+// ============= ADMIN SHIFT ROUTES =============
 
+// Get shifts for a specific date (Attendance Page)
+app.get("/api/admin/shifts", requireAdmin, async (req, res) => {
+  try {
+    const date = req.query.date as string;
+    
+    // Validate and parse date
+    if (!date) {
+      // Default to today if no date provided
+      const today = new Date().toISOString().split("T")[0];
+      const shifts = await storage.getShiftsByDate(today);
+      return res.json(shifts);
+    }
+    
+    // Validate date format (YYYY-MM-DD)
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(date)) {
+      return res.status(400).json({ 
+        error: "Invalid date format. Expected YYYY-MM-DD",
+        received: date 
+      });
+    }
+    
+    // Validate it's a real date
+    const parsedDate = new Date(date);
+    if (isNaN(parsedDate.getTime())) {
+      return res.status(400).json({ 
+        error: "Invalid date",
+        received: date 
+      });
+    }
+    
+    console.log(`Fetching shifts for date: ${date}`);
+    
+    const shifts = await storage.getShiftsByDate(date);
+    
+    console.log(`Found ${shifts.length} shifts for ${date}`);
+    
+    res.json(shifts);
+  } catch (error) {
+    console.error("Failed to fetch shifts for date:", error);
+    res.status(500).json({ error: "Failed to fetch attendance data" });
+  }
+});
+
+// Get today's shifts (Staff Activity Monitor) - Keep this for real-time monitoring
+app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
+  try {
+    const shifts = await storage.getTodayShifts();
+    res.json(shifts);
+  } catch (error) {
+    console.error("Failed to fetch today's shifts:", error);
+    res.status(500).json({ error: "Failed to fetch today's shifts" });
+  }
+});
   // ============= ADMIN ROUTES =============
   
   // Get dashboard stats
@@ -1980,7 +2035,71 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to archive month" });
     }
   });
+  
+// ============= ADMIN TARGET BOARD SUMMARY =============
 
+// Get all BD employees' targets summary for admin Target Board
+app.get("/api/admin/targets/summary", requireAdmin, async (req, res) => {
+  try {
+    const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+    
+    // Get all employees
+    const allUsers = await storage.getAllUsers();
+    
+    // Filter to only Business Development employees who are active
+    const bdEmployees = allUsers.filter(u => 
+      u.role === "employee" && 
+      u.status === "active" && 
+      u.department === "Business Development"
+    );
+    
+    // Build data for each employee
+    const employeesData = await Promise.all(
+      bdEmployees.map(async (employee) => {
+        // Get target for this employee and month
+        const target = await storage.getTargetByUserAndMonth(employee.id, month);
+        
+        // Get all target items for this employee and month
+        const items = await storage.getTargetItemsByUserAndMonth(employee.id, month);
+        
+        const meetings = items.filter((i: any) => i.type === "meeting");
+        const orders = items.filter((i: any) => i.type === "order");
+        
+        // Remove password from employee data
+        const { password, ...safeEmployee } = employee;
+        
+        return {
+          employee: safeEmployee,
+          target: target || { meetingTarget: 20, orderTarget: 5 },
+          meetings: {
+            total: meetings.length,
+            verified: meetings.filter((m: any) => m.verified).length,
+            items: meetings,
+          },
+          orders: {
+            total: orders.length,
+            verified: orders.filter((o: any) => o.verified).length,
+            items: orders,
+          },
+        };
+      })
+    );
+    
+    // Calculate totals
+    const totals = {
+      totalMeetings: employeesData.reduce((sum, e) => sum + e.meetings.total, 0),
+      verifiedMeetings: employeesData.reduce((sum, e) => sum + e.meetings.verified, 0),
+      totalOrders: employeesData.reduce((sum, e) => sum + e.orders.total, 0),
+      verifiedOrders: employeesData.reduce((sum, e) => sum + e.orders.verified, 0),
+      totalEmployees: employeesData.length,
+    };
+    
+    res.json({ employees: employeesData, totals });
+  } catch (error) {
+    console.error("Error fetching admin targets summary:", error);
+    res.status(500).json({ error: "Failed to fetch targets summary" });
+  }
+});
   // ============= DEBUG ROUTE (Remove in production) =============
   app.get("/api/debug/requests", requireAdmin, async (req, res) => {
     try {

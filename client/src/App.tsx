@@ -37,6 +37,7 @@ import SettingsPage from "@/pages/admin/settings";
 import AdminDailyReportsPage from "@/pages/admin/daily-reports";
 import AdminSpecialRequestsPage from "@/pages/admin/special-requests";
 import AdminArchivePage from "@/pages/admin/archive";
+import AdminTargetBoard from "@/pages/admin/targets"; // ← ADD THIS
 
 // Employee Imports
 import EmployeeDashboard from "@/pages/employee/dashboard";
@@ -88,6 +89,7 @@ function DashboardHeader() {
       "/admin/daily-reports": "Daily Reports",
       "/admin/special-requests": "Special Requests",
       "/admin/archive": "Archive",
+      "/admin/targets": "Target Board", // ← ADD THIS
       "/employee": "Dashboard",
       "/employee/attendance": "My Attendance",
       "/employee/calendar": "Calendar",
@@ -284,6 +286,15 @@ function AppRoutes() {
           </DashboardLayout>
         </ProtectedRoute>
       </Route>
+      {/* ↓↓↓ ADD THIS NEW ROUTE ↓↓↓ */}
+      <Route path="/admin/targets">
+        <ProtectedRoute requiredRole="admin">
+          <DashboardLayout>
+            <AdminTargetBoard />
+          </DashboardLayout>
+        </ProtectedRoute>
+      </Route>
+      {/* ↑↑↑ ADD THIS NEW ROUTE ↑↑↑ */}
 
       {/* Employee Routes */}
       <Route path="/employee">

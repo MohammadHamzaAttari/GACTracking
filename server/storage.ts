@@ -39,14 +39,20 @@ import {
   type SafeUser,
   BREAK_LIMITS
 } from "@shared/schema";
-import { and, eq, isNull, isNotNull, lt, or, desc } from "drizzle-orm";
+import { and, eq, isNull, isNotNull, lt, or, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import { db } from "./db";
-import { eq, desc, and, sql, inArray } from "drizzle-orm";
+
+// Type for shift with user data
+export interface ShiftWithUser extends Shift {
+  user: SafeUser | null;
+  breaks: Break[];
+}
 
 export interface IStorage {
-  // Add to IStorage interface
-deleteTargetItem(id: string): Promise<void>;
-getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]>;
+  getShiftsByDate(date: string): Promise<ShiftWithUser[]>;
+  deleteTargetItem(id: string): Promise<void>;
+  getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]>;
+  
   // User methods
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
@@ -62,7 +68,7 @@ getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[
   getShiftByUserAndDate(userId: string, date: string): Promise<Shift | undefined>;
   createShift(shift: InsertShift): Promise<Shift>;
   updateShift(id: string, data: Partial<InsertShift>): Promise<Shift | undefined>;
-  getShiftsByUser(userId: string): Promise<Shift[]>;
+  getShiftsByUser(userId: string, limit?: number): Promise<Shift[]>;
   getTodayShifts(): Promise<(Shift & { user: SafeUser; breaks: Break[] })[]>;
   
   // Break methods
@@ -72,7 +78,15 @@ getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[
   getBreaksByShift(shiftId: string): Promise<Break[]>;
   getBreaksByUserAndDate(userId: string, date: string): Promise<Break[]>;
   getActiveBreak(userId: string): Promise<Break | undefined>;
+  getActiveBreakForDate(userId: string, date: string): Promise<Break | undefined>;
   countBreaksByType(userId: string, date: string, type: string, shiftPeriod?: string): Promise<number>;
+  getAllActiveBreaks(userId: string): Promise<Break[]>;
+  endStaleBraaks(userId: string, currentDate: string): Promise<number>;
+  getBreakStatsForPeriod(userId: string, startDate: string, endDate: string): Promise<{
+    totalBreaks: number;
+    totalDuration: number;
+    byType: { type: string; count: number; duration: number }[];
+  }>;
   
   // Target methods
   getTargetById(id: string): Promise<Target | undefined>;
@@ -107,6 +121,9 @@ getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[
   updateDailyShiftReport(id: string, data: Partial<InsertDailyShiftReport>): Promise<DailyShiftReport | undefined>;
   getDailyShiftReportsByUser(userId: string, month?: string): Promise<DailyShiftReport[]>;
   getDailyShiftReportsByMonth(month: string): Promise<(DailyShiftReport & { user: SafeUser })[]>;
+  getDailyShiftReportsByUserAndMonth(userId: string, month: string): Promise<DailyShiftReport[]>;
+  getDailyShiftReportsForDateRange(startDate: string, endDate: string): Promise<(DailyShiftReport & { user: SafeUser })[]>;
+  getAllDailyShiftReports(): Promise<DailyShiftReport[]>;
   getReportByShiftId(shiftId: string): Promise<DailyShiftReport | undefined>;
 
   // Special Request methods
@@ -133,15 +150,11 @@ getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[
   isMonthArchived(month: string): Promise<boolean>;
   getArchivedReports(month: string): Promise<DailyShiftReport[]>;
   getArchivedRequests(month: string): Promise<SpecialRequest[]>;
-  // Add to IStorage interface in storage.ts
-getActiveBreakForDate(userId: string, date: string): Promise<Break | undefined>;
-endStaleBraaks(userId: string, currentDate: string): Promise<number>;
-getOrCreateShiftForDate(userId: string, date: string): Promise<Shift>;
-getBreakStatsForPeriod(userId: string, startDate: string, endDate: string): Promise<{
-  totalBreaks: number;
-  totalDuration: number;
-  byType: { type: string; count: number; duration: number }[];
-}>;
+  
+  // Incomplete shifts
+  getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise<Shift[]>;
+  getOrCreateShiftForDate(userId: string, date: string): Promise<Shift>;
+
   // Dashboard stats
   getDashboardStats(): Promise<{
     totalEmployees: number;
@@ -162,7 +175,8 @@ getBreakStatsForPeriod(userId: string, startDate: string, endDate: string): Prom
 
 // PostgreSQL Database Storage
 export class DatabaseStorage implements IStorage {
-  // User methods
+  // ============= USER METHODS =============
+  
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user || undefined;
@@ -269,66 +283,70 @@ export class DatabaseStorage implements IStorage {
       createdAt: users.createdAt,
     }).from(users).where(eq(users.department, department));
     return deptUsers as SafeUser[];
-  } 
-    async deleteTargetItem(id: string): Promise<void> {
-    await db.delete(targetItems).where(eq(targetItems.id, id));
-  }
-// Add these methods to your storage.ts file
-
-// Get all active breaks for a user (across all dates)
-async getAllActiveBreaks(userId: string): Promise<Break[]> {
-  return await db
-    .select()
-    .from(breaks)
-    .where(
-      and(
-        eq(breaks.userId, userId),
-        isNull(breaks.endTime)
-      )
-    )
-    .orderBy(desc(breaks.startTime));
-}
-
-// Get incomplete shifts before a specific date
-async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise<Shift[]> {
-  return await db
-    .select()
-    .from(shifts)
-    .where(
-      and(
-        eq(shifts.userId, userId),
-        lt(shifts.date, beforeDate),
-        or(
-          and(
-            isNotNull(shifts.morningClockIn),
-            isNull(shifts.morningClockOut)
-          ),
-          and(
-            isNotNull(shifts.eveningClockIn),
-            isNull(shifts.eveningClockOut)
-          )
-        )
-      )
-    )
-    .orderBy(desc(shifts.date));
-}
-  // Get target items by user and month
-  async getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]> {
-    const startDate = `${month}-01`;
-    const endDate = `${month}-31`;
-    
-    return await db
-      .select()
-      .from(targetItems)
-      .where(and(
-        eq(targetItems.userId, userId),
-        sql`${targetItems.date} >= ${startDate}`,
-        sql`${targetItems.date} <= ${endDate}`
-      ))
-      .orderBy(desc(targetItems.createdAt));
   }
 
-  // Shift methods
+  // ============= SHIFT METHODS =============
+
+  async getShiftsByDate(date: string): Promise<ShiftWithUser[]> {
+    try {
+      const shiftRecords = await db
+        .select({
+          id: shifts.id,
+          userId: shifts.userId,
+          date: shifts.date,
+          morningClockIn: shifts.morningClockIn,
+          morningClockOut: shifts.morningClockOut,
+          morningLateMinutes: shifts.morningLateMinutes,
+          eveningClockIn: shifts.eveningClockIn,
+          eveningClockOut: shifts.eveningClockOut,
+          eveningLateMinutes: shifts.eveningLateMinutes,
+          status: shifts.status,
+          notes: shifts.notes,
+          createdAt: shifts.createdAt,
+          user: {
+            id: users.id,
+            username: users.username,
+            firstName: users.firstName,
+            lastName: users.lastName,
+            email: users.email,
+            role: users.role,
+            department: users.department,
+            position: users.position,
+            salary: users.salary,
+            status: users.status,
+            shiftType: users.shiftType,
+            shiftStartTime: users.shiftStartTime,
+            shiftEndTime: users.shiftEndTime,
+            phone: users.phone,
+            whatsappPreference: users.whatsappPreference,
+            address: users.address,
+            emergencyContact: users.emergencyContact,
+            isActive: users.isActive,
+            createdAt: users.createdAt,
+          },
+        })
+        .from(shifts)
+        .leftJoin(users, eq(shifts.userId, users.id))
+        .where(eq(shifts.date, date))
+        .orderBy(desc(shifts.createdAt));
+      
+      // Fetch breaks for all shifts
+      const shiftIds = shiftRecords.map(r => r.id);
+      const allBreaks = shiftIds.length > 0 
+        ? await db.select().from(breaks).where(inArray(breaks.shiftId, shiftIds))
+        : [];
+      
+      // Merge breaks into shifts
+      return shiftRecords.map(shift => ({
+        ...shift,
+        breaks: allBreaks.filter(b => b.shiftId === shift.id),
+      })) as ShiftWithUser[];
+    } catch (error) {
+      console.error("Error fetching shifts by date:", error);
+      return [];
+    }
+  }
+
   async getShiftById(id: string): Promise<Shift | undefined> {
     const [shift] = await db.select().from(shifts).where(eq(shifts.id, id));
     return shift || undefined;
@@ -352,12 +370,13 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return shift || undefined;
   }
 
-  async getShiftsByUser(userId: string): Promise<Shift[]> {
+  async getShiftsByUser(userId: string, limit: number = 30): Promise<Shift[]> {
     return await db
       .select()
       .from(shifts)
       .where(eq(shifts.userId, userId))
-      .orderBy(desc(shifts.date));
+      .orderBy(desc(shifts.date))
+      .limit(limit);
   }
 
   async getTodayShifts(): Promise<(Shift & { user: SafeUser; breaks: Break[] })[]> {
@@ -417,7 +436,45 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return shiftsWithBreaks as (Shift & { user: SafeUser; breaks: Break[] })[];
   }
 
-  // Break methods
+  async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise<Shift[]> {
+    return await db
+      .select()
+      .from(shifts)
+      .where(
+        and(
+          eq(shifts.userId, userId),
+          lt(shifts.date, beforeDate),
+          or(
+            and(
+              isNotNull(shifts.morningClockIn),
+              isNull(shifts.morningClockOut)
+            ),
+            and(
+              isNotNull(shifts.eveningClockIn),
+              isNull(shifts.eveningClockOut)
+            )
+          )
+        )
+      )
+      .orderBy(desc(shifts.date));
+  }
+
+  async getOrCreateShiftForDate(userId: string, date: string): Promise<Shift> {
+    let shift = await this.getShiftByUserAndDate(userId, date);
+    
+    if (!shift) {
+      shift = await this.createShift({
+        userId,
+        date,
+        status: "not_started",
+      });
+    }
+    
+    return shift;
+  }
+
+  // ============= BREAK METHODS =============
+
   async getBreakById(id: string): Promise<Break | undefined> {
     const [breakRecord] = await db.select().from(breaks).where(eq(breaks.id, id));
     return breakRecord || undefined;
@@ -453,9 +510,36 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
       .where(and(
         eq(breaks.userId, userId),
         eq(breaks.date, today),
-        sql`${breaks.endTime} IS NULL`
+        isNull(breaks.endTime)
       ));
     return activeBreak || undefined;
+  }
+
+  async getActiveBreakForDate(userId: string, date: string): Promise<Break | undefined> {
+    const [activeBreak] = await db
+      .select()
+      .from(breaks)
+      .where(and(
+        eq(breaks.userId, userId),
+        eq(breaks.date, date),
+        isNull(breaks.endTime)
+      ))
+      .orderBy(desc(breaks.startTime))
+      .limit(1);
+    return activeBreak || undefined;
+  }
+
+  async getAllActiveBreaks(userId: string): Promise<Break[]> {
+    return await db
+      .select()
+      .from(breaks)
+      .where(
+        and(
+          eq(breaks.userId, userId),
+          isNull(breaks.endTime)
+        )
+      )
+      .orderBy(desc(breaks.startTime));
   }
 
   async countBreaksByType(userId: string, date: string, type: string, shiftPeriod?: string): Promise<number> {
@@ -477,7 +561,81 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return Number(result?.count || 0);
   }
 
-  // Target methods
+  async endStaleBraaks(userId: string, currentDate: string): Promise<number> {
+    const now = new Date();
+    
+    // Find all breaks without end time that are not from today
+    const staleBreaks = await db
+      .select()
+      .from(breaks)
+      .where(and(
+        eq(breaks.userId, userId),
+        isNull(breaks.endTime),
+        lt(breaks.date, currentDate)
+      ));
+    
+    let endedCount = 0;
+    
+    for (const brk of staleBreaks) {
+      // End the break at midnight of that day
+      const breakDate = new Date(brk.date);
+      breakDate.setHours(23, 59, 59, 999);
+      
+      const durationMinutes = Math.floor(
+        (breakDate.getTime() - new Date(brk.startTime).getTime()) / 60000
+      );
+      
+      await db.update(breaks).set({
+        endTime: breakDate,
+        durationMinutes: Math.min(durationMinutes, 480), // Cap at 8 hours
+      }).where(eq(breaks.id, brk.id));
+      
+      endedCount++;
+    }
+    
+    return endedCount;
+  }
+
+  async getBreakStatsForPeriod(userId: string, startDate: string, endDate: string): Promise<{
+    totalBreaks: number;
+    totalDuration: number;
+    byType: { type: string; count: number; duration: number }[];
+  }> {
+    const allBreaks = await db
+      .select()
+      .from(breaks)
+      .where(and(
+        eq(breaks.userId, userId),
+        gte(breaks.date, startDate),
+        lte(breaks.date, endDate)
+      ));
+    
+    const byType = [
+      { type: "prayer", count: 0, duration: 0 },
+      { type: "meal", count: 0, duration: 0 },
+      { type: "urgent", count: 0, duration: 0 },
+    ];
+    
+    let totalDuration = 0;
+    
+    for (const brk of allBreaks) {
+      const stat = byType.find(s => s.type === brk.type);
+      if (stat) {
+        stat.count++;
+        stat.duration += brk.durationMinutes || 0;
+      }
+      totalDuration += brk.durationMinutes || 0;
+    }
+    
+    return {
+      totalBreaks: allBreaks.length,
+      totalDuration,
+      byType,
+    };
+  }
+
+  // ============= TARGET METHODS =============
+
   async getTargetById(id: string): Promise<Target | undefined> {
     const [target] = await db.select().from(targets).where(eq(targets.id, id));
     return target || undefined;
@@ -501,7 +659,46 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return target || undefined;
   }
 
-  // Target item methods
+  async getAllTargetsForMonth(month: string): Promise<(Target & { user: SafeUser })[]> {
+    const records = await db
+      .select({
+        id: targets.id,
+        userId: targets.userId,
+        month: targets.month,
+        meetingTarget: targets.meetingTarget,
+        orderTarget: targets.orderTarget,
+        createdAt: targets.createdAt,
+        user: {
+          id: users.id,
+          username: users.username,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          role: users.role,
+          department: users.department,
+          position: users.position,
+          salary: users.salary,
+          status: users.status,
+          shiftType: users.shiftType,
+          shiftStartTime: users.shiftStartTime,
+          shiftEndTime: users.shiftEndTime,
+          phone: users.phone,
+          whatsappPreference: users.whatsappPreference,
+          address: users.address,
+          emergencyContact: users.emergencyContact,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        },
+      })
+      .from(targets)
+      .leftJoin(users, eq(targets.userId, users.id))
+      .where(eq(targets.month, month));
+    
+    return records as (Target & { user: SafeUser })[];
+  }
+
+  // ============= TARGET ITEM METHODS =============
+
   async getTargetItemById(id: string): Promise<TargetItem | undefined> {
     const [item] = await db.select().from(targetItems).where(eq(targetItems.id, id));
     return item || undefined;
@@ -517,11 +714,83 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return item || undefined;
   }
 
+  async deleteTargetItem(id: string): Promise<void> {
+    await db.delete(targetItems).where(eq(targetItems.id, id));
+  }
+
   async getTargetItemsByTarget(targetId: string): Promise<TargetItem[]> {
     return await db.select().from(targetItems).where(eq(targetItems.targetId, targetId));
   }
 
-  // Activity log methods
+  async getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]> {
+    const startDate = `${month}-01`;
+    const endDate = `${month}-31`;
+    
+    return await db
+      .select()
+      .from(targetItems)
+      .where(and(
+        eq(targetItems.userId, userId),
+        gte(targetItems.date, startDate),
+        lte(targetItems.date, endDate)
+      ))
+      .orderBy(desc(targetItems.createdAt));
+  }
+
+  async getAllTargetItemsForMonth(month: string): Promise<(TargetItem & { user: SafeUser })[]> {
+    const startDate = `${month}-01`;
+    const endDate = `${month}-31`;
+    
+    const records = await db
+      .select({
+        id: targetItems.id,
+        targetId: targetItems.targetId,
+        userId: targetItems.userId,
+        type: targetItems.type,
+        name: targetItems.name,
+        source: targetItems.source,
+        clientType: targetItems.clientType,
+        contactLink: targetItems.contactLink,
+        date: targetItems.date,
+        verified: targetItems.verified,
+        verifiedAt: targetItems.verifiedAt,
+        verifiedBy: targetItems.verifiedBy,
+        createdAt: targetItems.createdAt,
+        user: {
+          id: users.id,
+          username: users.username,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          role: users.role,
+          department: users.department,
+          position: users.position,
+          salary: users.salary,
+          status: users.status,
+          shiftType: users.shiftType,
+          shiftStartTime: users.shiftStartTime,
+          shiftEndTime: users.shiftEndTime,
+          phone: users.phone,
+          whatsappPreference: users.whatsappPreference,
+          address: users.address,
+          emergencyContact: users.emergencyContact,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        },
+      })
+      .from(targetItems)
+      .leftJoin(users, eq(targetItems.userId, users.id))
+      .where(and(
+        gte(targetItems.date, startDate),
+        lte(targetItems.date, endDate)
+      ))
+      .orderBy(desc(targetItems.createdAt));
+    
+    return records as (TargetItem & { user: SafeUser })[];
+  }
+
+  // ============= ACTIVITY LOG METHODS =============
+
   async createActivityLog(log: InsertActivityLog): Promise<ActivityLog> {
     const [newLog] = await db.insert(activityLogs).values(log).returning();
     return newLog;
@@ -584,7 +853,8 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return logs as (ActivityLog & { user: SafeUser })[];
   }
 
-  // WASENDER config methods
+  // ============= WASENDER CONFIG METHODS =============
+
   async getWasenderConfig(): Promise<WasenderConfig | undefined> {
     const [config] = await db.select().from(wasenderConfig).limit(1);
     return config || undefined;
@@ -604,123 +874,9 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
       return created;
     }
   }
-// server/storage.ts - Add these methods to the DatabaseStorage class
 
-  // Get active break for a specific date only
-  async getActiveBreakForDate(userId: string, date: string): Promise<Break | undefined> {
-    const [activeBreak] = await db
-      .select()
-      .from(breaks)
-      .where(and(
-        eq(breaks.userId, userId),
-        eq(breaks.date, date),
-        sql`${breaks.endTime} IS NULL`
-      ))
-      .orderBy(desc(breaks.startTime))
-      .limit(1);
-    return activeBreak || undefined;
-  }
+  // ============= DEPARTMENT METHODS =============
 
-  // End stale breaks from previous days
-  async endStaleBraaks(userId: string, currentDate: string): Promise<number> {
-    const now = new Date();
-    
-    // Find all breaks without end time that are not from today
-    const staleBreaks = await db
-      .select()
-      .from(breaks)
-      .where(and(
-        eq(breaks.userId, userId),
-        sql`${breaks.endTime} IS NULL`,
-        sql`${breaks.date} < ${currentDate}`
-      ));
-    
-    let endedCount = 0;
-    
-    for (const brk of staleBreaks) {
-      // End the break at midnight of that day
-      const breakDate = new Date(brk.date);
-      breakDate.setHours(23, 59, 59, 999);
-      
-      const durationMinutes = Math.floor(
-        (breakDate.getTime() - new Date(brk.startTime).getTime()) / 60000
-      );
-      
-      await db.update(breaks).set({
-        endTime: breakDate,
-        durationMinutes: Math.min(durationMinutes, 480), // Cap at 8 hours
-      }).where(eq(breaks.id, brk.id));
-      
-      endedCount++;
-    }
-    
-    return endedCount;
-  }
-
-  // Get shifts with limit
-  async getShiftsByUser(userId: string, limit: number = 30): Promise<Shift[]> {
-    return await db
-      .select()
-      .from(shifts)
-      .where(eq(shifts.userId, userId))
-      .orderBy(desc(shifts.date))
-      .limit(limit);
-  }
-
-  // Check if shift exists for date and is properly initialized
-  async getOrCreateShiftForDate(userId: string, date: string): Promise<Shift> {
-    let shift = await this.getShiftByUserAndDate(userId, date);
-    
-    if (!shift) {
-      shift = await this.createShift({
-        userId,
-        date,
-        status: "not_started",
-      });
-    }
-    
-    return shift;
-  }
-
-  // Get break statistics for a date range
-  async getBreakStatsForPeriod(userId: string, startDate: string, endDate: string): Promise<{
-    totalBreaks: number;
-    totalDuration: number;
-    byType: { type: string; count: number; duration: number }[];
-  }> {
-    const allBreaks = await db
-      .select()
-      .from(breaks)
-      .where(and(
-        eq(breaks.userId, userId),
-        sql`${breaks.date} >= ${startDate}`,
-        sql`${breaks.date} <= ${endDate}`
-      ));
-    
-    const byType = [
-      { type: "prayer", count: 0, duration: 0 },
-      { type: "meal", count: 0, duration: 0 },
-      { type: "urgent", count: 0, duration: 0 },
-    ];
-    
-    let totalDuration = 0;
-    
-    for (const brk of allBreaks) {
-      const stat = byType.find(s => s.type === brk.type);
-      if (stat) {
-        stat.count++;
-        stat.duration += brk.durationMinutes || 0;
-      }
-      totalDuration += brk.durationMinutes || 0;
-    }
-    
-    return {
-      totalBreaks: allBreaks.length,
-      totalDuration,
-      byType,
-    };
-  }
-  // Department methods
   async getDepartments(): Promise<Department[]> {
     return await db.select().from(departments);
   }
@@ -730,7 +886,8 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return dept || undefined;
   }
 
-  // Dashboard stats
+  // ============= DASHBOARD STATS =============
+
   async getDashboardStats(): Promise<{
     totalEmployees: number;
     activeWorking: number;
@@ -773,98 +930,8 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     };
   }
 
-  // Get all targets for a month with user info
-  async getAllTargetsForMonth(month: string): Promise<(Target & { user: SafeUser })[]> {
-    const records = await db
-      .select({
-        id: targets.id,
-        userId: targets.userId,
-        month: targets.month,
-        meetingTarget: targets.meetingTarget,
-        orderTarget: targets.orderTarget,
-        createdAt: targets.createdAt,
-        user: {
-          id: users.id,
-          username: users.username,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          email: users.email,
-          role: users.role,
-          department: users.department,
-          position: users.position,
-          salary: users.salary,
-          status: users.status,
-          shiftType: users.shiftType,
-          shiftStartTime: users.shiftStartTime,
-          shiftEndTime: users.shiftEndTime,
-          phone: users.phone,
-          whatsappPreference: users.whatsappPreference,
-          address: users.address,
-          emergencyContact: users.emergencyContact,
-          isActive: users.isActive,
-          createdAt: users.createdAt,
-        },
-      })
-      .from(targets)
-      .leftJoin(users, eq(targets.userId, users.id))
-      .where(eq(targets.month, month));
-    
-    return records as (Target & { user: SafeUser })[];
-  }
+  // ============= ANALYTICS METHODS =============
 
-  // Get all target items for a month with user info
-  async getAllTargetItemsForMonth(month: string): Promise<(TargetItem & { user: SafeUser })[]> {
-    const startDate = `${month}-01`;
-    const endDate = `${month}-31`;
-    
-    const records = await db
-      .select({
-        id: targetItems.id,
-        targetId: targetItems.targetId,
-        userId: targetItems.userId,
-        type: targetItems.type,
-        name: targetItems.name,
-        source: targetItems.source,
-        contactLink: targetItems.contactLink,
-        date: targetItems.date,
-        verified: targetItems.verified,
-        verifiedAt: targetItems.verifiedAt,
-        verifiedBy: targetItems.verifiedBy,
-        createdAt: targetItems.createdAt,
-        user: {
-          id: users.id,
-          username: users.username,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          email: users.email,
-          role: users.role,
-          department: users.department,
-          position: users.position,
-          salary: users.salary,
-          status: users.status,
-          shiftType: users.shiftType,
-          shiftStartTime: users.shiftStartTime,
-          shiftEndTime: users.shiftEndTime,
-          phone: users.phone,
-          whatsappPreference: users.whatsappPreference,
-          address: users.address,
-          emergencyContact: users.emergencyContact,
-          isActive: users.isActive,
-          createdAt: users.createdAt,
-        },
-      })
-      .from(targetItems)
-      .leftJoin(users, eq(targetItems.userId, users.id))
-      .where(and(
-        sql`${targetItems.date} >= ${startDate}`,
-        sql`${targetItems.date} <= ${endDate}`
-      ))
-      .orderBy(desc(targetItems.createdAt));
-    
-    return records as (TargetItem & { user: SafeUser })[];
-  }
-
-  // Analytics: Attendance stats
   async getAttendanceAnalytics(startDate?: string, endDate?: string): Promise<{
     totalShifts: number;
     onTimeRate: number;
@@ -879,8 +946,8 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
       .select()
       .from(shifts)
       .where(and(
-        sql`${shifts.date} >= ${start}`,
-        sql`${shifts.date} <= ${end}`
+        gte(shifts.date, start),
+        lte(shifts.date, end)
       ));
     
     const totalShifts = allShifts.length;
@@ -896,8 +963,8 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
       .select()
       .from(breaks)
       .where(and(
-        sql`${breaks.date} >= ${start}`,
-        sql`${breaks.date} <= ${end}`
+        gte(breaks.date, start),
+        lte(breaks.date, end)
       ));
     
     const breakStats = [
@@ -926,7 +993,6 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     };
   }
 
-  // Analytics: Department stats
   async getDepartmentStats(): Promise<{ department: string; count: number; activeToday: number }[]> {
     const today = new Date().toISOString().split("T")[0];
     
@@ -973,10 +1039,12 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
   }
 
   async createDailyShiftReport(report: InsertDailyShiftReport): Promise<DailyShiftReport> {
+    console.log("Storage: Creating daily report with data:", report);
     const [created] = await db
       .insert(dailyShiftReports)
       .values(report)
       .returning();
+    console.log("Storage: Created daily report:", created);
     return created;
   }
 
@@ -1004,6 +1072,8 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
   }
 
   async getDailyShiftReportsByMonth(month: string): Promise<(DailyShiftReport & { user: SafeUser })[]> {
+    console.log(`Storage: Fetching daily reports for month "${month}"`);
+    
     const reports = await db
       .select({
         id: dailyShiftReports.id,
@@ -1045,7 +1115,89 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
       .where(eq(dailyShiftReports.month, month))
       .orderBy(desc(dailyShiftReports.date));
     
+    console.log(`Storage: Found ${reports.length} reports for month ${month}`);
+    
     return reports as (DailyShiftReport & { user: SafeUser })[];
+  }
+
+  // NEW: Get daily reports by user and month
+  async getDailyShiftReportsByUserAndMonth(userId: string, month: string): Promise<DailyShiftReport[]> {
+    console.log(`Storage: Fetching reports for user ${userId}, month ${month}`);
+    
+    const reports = await db
+      .select()
+      .from(dailyShiftReports)
+      .where(and(
+        eq(dailyShiftReports.userId, userId),
+        eq(dailyShiftReports.month, month)
+      ))
+      .orderBy(desc(dailyShiftReports.date));
+    
+    console.log(`Storage: Found ${reports.length} reports`);
+    return reports;
+  }
+
+  // NEW: Get daily reports for date range with user data
+  async getDailyShiftReportsForDateRange(startDate: string, endDate: string): Promise<(DailyShiftReport & { user: SafeUser })[]> {
+    console.log(`Storage: Fetching reports from ${startDate} to ${endDate}`);
+    
+    const reports = await db
+      .select({
+        id: dailyShiftReports.id,
+        userId: dailyShiftReports.userId,
+        shiftId: dailyShiftReports.shiftId,
+        date: dailyShiftReports.date,
+        workDetails: dailyShiftReports.workDetails,
+        loomVideos: dailyShiftReports.loomVideos,
+        notes: dailyShiftReports.notes,
+        references: dailyShiftReports.references,
+        month: dailyShiftReports.month,
+        archived: dailyShiftReports.archived,
+        createdAt: dailyShiftReports.createdAt,
+        updatedAt: dailyShiftReports.updatedAt,
+        user: {
+          id: users.id,
+          username: users.username,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          email: users.email,
+          role: users.role,
+          department: users.department,
+          position: users.position,
+          salary: users.salary,
+          status: users.status,
+          shiftType: users.shiftType,
+          shiftStartTime: users.shiftStartTime,
+          shiftEndTime: users.shiftEndTime,
+          phone: users.phone,
+          whatsappPreference: users.whatsappPreference,
+          address: users.address,
+          emergencyContact: users.emergencyContact,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        },
+      })
+      .from(dailyShiftReports)
+      .innerJoin(users, eq(dailyShiftReports.userId, users.id))
+      .where(and(
+        gte(dailyShiftReports.date, startDate),
+        lte(dailyShiftReports.date, endDate)
+      ))
+      .orderBy(desc(dailyShiftReports.createdAt));
+    
+    console.log(`Storage: Found ${reports.length} reports for date range`);
+    return reports as (DailyShiftReport & { user: SafeUser })[];
+  }
+
+  // NEW: Get all daily reports (for debugging)
+  async getAllDailyShiftReports(): Promise<DailyShiftReport[]> {
+    const reports = await db
+      .select()
+      .from(dailyShiftReports)
+      .orderBy(desc(dailyShiftReports.createdAt));
+    
+    console.log(`Storage: Total daily reports in database: ${reports.length}`);
+    return reports;
   }
 
   async getReportByShiftId(shiftId: string): Promise<DailyShiftReport | undefined> {
@@ -1199,7 +1351,6 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return requests as (SpecialRequest & { user: SafeUser })[];
   }
 
-  // NEW: Get special requests by status with user data (for admin)
   async getSpecialRequestsByStatusWithUser(status: string, month: string): Promise<any[]> {
     console.log(`Storage: Fetching requests with status "${status}" for month "${month}"`);
     
@@ -1236,7 +1387,6 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return requests;
   }
 
-  // NEW: Get special requests by month with user data (for admin)
   async getSpecialRequestsByMonthWithUser(month: string): Promise<any[]> {
     console.log(`Storage: Fetching all requests for month "${month}"`);
     
@@ -1268,7 +1418,6 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return requests;
   }
 
-  // NEW: Get all special requests (for debugging)
   async getAllSpecialRequests(): Promise<SpecialRequest[]> {
     const requests = await db
       .select()
@@ -1329,7 +1478,6 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return created;
   }
 
-  // NEW: Get request comments with user info
   async getRequestCommentsWithUser(requestId: string): Promise<any[]> {
     const comments = await db
       .select({
@@ -1353,7 +1501,6 @@ async getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise
     return comments;
   }
 
-  // NEW: Get single request comment with user info
   async getRequestCommentWithUser(commentId: string): Promise<any> {
     const [comment] = await db
       .select({

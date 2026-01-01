@@ -34,6 +34,9 @@ import {
   RefreshCw,
   Circle,
   Sparkles,
+  CalendarDays,
+  Search,
+  Filter,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -49,6 +52,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 // Helper function to safely parse JSON or return array
@@ -56,14 +64,11 @@ function safeParseArray(value: any): string[] {
   if (!value) return [];
   if (Array.isArray(value)) return value;
   if (typeof value === "string") {
-    // Try to parse as JSON
     try {
       const parsed = JSON.parse(value);
       if (Array.isArray(parsed)) return parsed;
-      // If it's a single string (not JSON), return it as an array
       return [value];
     } catch {
-      // Not valid JSON, treat as single string value
       if (value.trim()) {
         return [value];
       }
@@ -73,18 +78,72 @@ function safeParseArray(value: any): string[] {
   return [];
 }
 
-// Generate month options for the last 12 months
-function getMonthOptions() {
-  const options = [];
+// Get current month in LOCAL time (not UTC)
+function getCurrentMonth(): string {
   const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    options.push({
-      value: format(date, "yyyy-MM"),
-      label: format(date, "MMMM yyyy"),
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Get today's date in LOCAL time
+function getToday(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+// Generate year options
+function getYearOptions() {
+  const years = [];
+  const currentYear = new Date().getFullYear();
+  for (let year = currentYear + 1; year >= currentYear - 5; year--) {
+    years.push(year);
+  }
+  return years;
+}
+
+// Generate month options for a specific year
+function getMonthOptionsForYear(year: number) {
+  const months = [];
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  for (let month = 0; month < 12; month++) {
+    // For current year, only show up to current month + 1
+    if (year === currentYear && month > currentMonth + 1) continue;
+    // For future years, show all months
+    // For past years, show all months
+    
+    const date = new Date(year, month, 1);
+    months.push({
+      value: String(month + 1).padStart(2, '0'),
+      label: format(date, "MMMM"),
     });
   }
-  return options;
+  return months;
+}
+
+// Stat Pill Component
+function StatPill({
+  icon: Icon,
+  value,
+  label,
+  color
+}: {
+  icon: any;
+  value: number;
+  label: string;
+  color: string;
+}) {
+  return (
+    <div className={cn(
+      "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium",
+      "bg-white dark:bg-slate-800 shadow-sm border border-slate-100 dark:border-slate-700"
+    )}>
+      <Icon className={cn("h-3.5 w-3.5", color)} />
+      <span className="font-bold text-slate-900 dark:text-white">{value}</span>
+      <span className="text-slate-500 hidden sm:inline">{label}</span>
+    </div>
+  );
 }
 
 // Report Card Component
@@ -104,8 +163,8 @@ function ReportCard({
       onClick={onClick}
       className={cn(
         "w-full text-left p-4 rounded-xl border transition-all duration-200",
-        "bg-white dark:bg-slate-900 hover:shadow-md hover:border-primary/50",
-        "group"
+        "bg-white dark:bg-slate-900 hover:shadow-lg hover:border-primary/50",
+        "hover:-translate-y-0.5 group"
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -119,21 +178,26 @@ function ReportCard({
             </span>
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-slate-900 dark:text-white mb-1">
-              {format(reportDate, "EEEE")}
-            </p>
+            <div className="flex items-center gap-2 mb-1">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {format(reportDate, "EEEE")}
+              </p>
+              <span className="text-[10px] text-slate-400">
+                {format(reportDate, "yyyy")}
+              </span>
+            </div>
             <p className="text-xs text-slate-500 line-clamp-2">
               {report.workDetails?.substring(0, 100)}...
             </p>
             <div className="flex items-center gap-2 mt-2">
               {videos.length > 0 && (
-                <Badge variant="secondary" className="text-[10px] gap-1">
+                <Badge variant="secondary" className="text-[10px] gap-1 bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400">
                   <Video className="h-2.5 w-2.5" />
                   {videos.length}
                 </Badge>
               )}
               {refs.length > 0 && (
-                <Badge variant="secondary" className="text-[10px] gap-1">
+                <Badge variant="secondary" className="text-[10px] gap-1 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
                   <Link2 className="h-2.5 w-2.5" />
                   {refs.length}
                 </Badge>
@@ -141,7 +205,7 @@ function ReportCard({
             </div>
           </div>
         </div>
-        <ChevronRight className="h-4 w-4 text-slate-400 group-hover:text-primary transition-colors shrink-0" />
+        <ChevronRight className="h-4 w-4 text-slate-400 group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0" />
       </div>
     </button>
   );
@@ -150,14 +214,24 @@ function ReportCard({
 export default function ShiftReportPage() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const today = new Date().toISOString().split("T")[0];
-  const currentMonth = new Date().toISOString().substring(0, 7);
+  
+  // Use LOCAL time for dates
+  const today = getToday();
+  const currentMonth = getCurrentMonth();
+  const currentYear = new Date().getFullYear();
+  const currentMonthNum = new Date().getMonth() + 1;
 
   // States
-  const [selectedMonth, setSelectedMonth] = useState(currentMonth);
+  const [selectedYear, setSelectedYear] = useState(currentYear);
+  const [selectedMonthNum, setSelectedMonthNum] = useState(String(currentMonthNum).padStart(2, '0'));
+  const [selectedDate, setSelectedDate] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [selectedReport, setSelectedReport] = useState<any>(null);
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("submit");
+
+  // Computed selected month string
+  const selectedMonth = `${selectedYear}-${selectedMonthNum}`;
 
   // Form state
   const [workDetails, setWorkDetails] = useState("");
@@ -176,36 +250,85 @@ export default function ShiftReportPage() {
   const todayShift = todayStatus?.shift;
   const hasSubmittedReport = todayStatus?.hasSubmittedReport;
 
-  // Get all reports for selected month
-  const { data: reports = [], isLoading: reportsLoading, refetch: refetchReports } = useQuery({
+  // Get all reports for selected month - FIXED QUERY
+  const { data: reports = [], isLoading: reportsLoading, refetch: refetchReports, error: reportsError } = useQuery({
     queryKey: ["my-reports", selectedMonth],
     queryFn: async () => {
+      console.log("Employee: Fetching reports for month:", selectedMonth);
       const res = await apiRequest("GET", `/api/reports/daily/my?month=${selectedMonth}`);
-      if (!res.ok) throw new Error("Failed to fetch reports");
-      return res.json();
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        console.error("Failed to fetch reports:", errorData);
+        throw new Error(errorData.error || "Failed to fetch reports");
+      }
+      const data = await res.json();
+      console.log("Employee: Received reports:", data.length, data);
+      return data;
     },
+    staleTime: 0, // Always refetch
   });
 
-  // Sort reports by date (newest first)
-  const sortedReports = useMemo(() => {
-    return [...reports].sort((a: any, b: any) => 
-      new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
+  // Get unique dates for the selected month
+  const availableDates = useMemo(() => {
+    const dateSet = new Set<string>();
+    reports.forEach((r: any) => dateSet.add(r.date));
+    return Array.from(dateSet).sort().reverse();
   }, [reports]);
 
-  // Stats for selected month - SAFE PARSING
+  // Filter and sort reports
+  const filteredReports = useMemo(() => {
+    let filtered = [...reports];
+
+    // Filter by search query
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter((r: any) =>
+        r.workDetails?.toLowerCase().includes(query) ||
+        r.notes?.toLowerCase().includes(query)
+      );
+    }
+
+    // Filter by specific date
+    if (selectedDate && selectedDate !== "all_dates") {
+      filtered = filtered.filter((r: any) => r.date === selectedDate);
+    }
+
+    // Sort by date (newest first)
+    return filtered.sort((a: any, b: any) => 
+      new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+  }, [reports, searchQuery, selectedDate]);
+
+  // Stats for selected month
   const stats = useMemo(() => {
     const total = reports.length;
-    const withVideos = reports.filter((r: any) => {
-      const videos = safeParseArray(r.loomVideos);
-      return videos.length > 0;
-    }).length;
-    const withRefs = reports.filter((r: any) => {
-      const refs = safeParseArray(r.references);
-      return refs.length > 0;
-    }).length;
-    return { total, withVideos, withRefs };
+    let totalVideos = 0;
+    let totalRefs = 0;
+    
+    reports.forEach((r: any) => {
+      totalVideos += safeParseArray(r.loomVideos).length;
+      totalRefs += safeParseArray(r.references).length;
+    });
+    
+    return { total, totalVideos, totalRefs };
   }, [reports]);
+
+  // Stats for current month (for status card)
+  const { data: currentMonthReports = [] } = useQuery({
+    queryKey: ["my-reports", currentMonth],
+    queryFn: async () => {
+      if (selectedMonth === currentMonth) return reports;
+      const res = await apiRequest("GET", `/api/reports/daily/my?month=${currentMonth}`);
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: selectedMonth !== currentMonth,
+  });
+
+  const currentMonthStats = useMemo(() => {
+    const reportsToCount = selectedMonth === currentMonth ? reports : currentMonthReports;
+    return { total: reportsToCount.length };
+  }, [reports, currentMonthReports, selectedMonth, currentMonth]);
 
   // Submit report mutation
   const submitMutation = useMutation({
@@ -230,14 +353,12 @@ export default function ShiftReportPage() {
         title: "Report Submitted!",
         description: "Your daily shift report has been saved successfully.",
       });
-      // Reset form
       setWorkDetails("");
       setNotes("");
       setLoomVideos([]);
       setReferences([]);
-      // Refresh data
       queryClient.invalidateQueries({ queryKey: ["/api/employee/today"] });
-      queryClient.invalidateQueries({ queryKey: ["my-reports", currentMonth] });
+      queryClient.invalidateQueries({ queryKey: ["my-reports"] });
       refetchReports();
     },
     onError: (error: any) => {
@@ -276,6 +397,24 @@ export default function ShiftReportPage() {
     setViewDialogOpen(true);
   };
 
+  const clearFilters = () => {
+    setSearchQuery("");
+    setSelectedDate("");
+  };
+
+  const hasActiveFilters = searchQuery || selectedDate;
+
+  // Reset date filter when month changes
+  const handleYearChange = (year: string) => {
+    setSelectedYear(Number(year));
+    setSelectedDate("");
+  };
+
+  const handleMonthChange = (month: string) => {
+    setSelectedMonthNum(month);
+    setSelectedDate("");
+  };
+
   if (statusLoading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -289,40 +428,31 @@ export default function ShiftReportPage() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="p-6 max-w-6xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Daily Reports</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Submit and view your daily shift reports
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="gap-1">
+      <div className="p-4 sm:p-6 max-w-6xl mx-auto space-y-4">
+        {/* Main Content */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <TabsList className="grid w-full max-w-xs grid-cols-2">
+              <TabsTrigger value="submit" className="gap-2 text-xs sm:text-sm">
+                <Send className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Submit</span> Report
+              </TabsTrigger>
+              <TabsTrigger value="history" className="gap-2 text-xs sm:text-sm">
+                <History className="h-3.5 w-3.5" />
+                History
+              </TabsTrigger>
+            </TabsList>
+
+            <Badge variant="outline" className="gap-1 hidden sm:flex">
               <Calendar className="h-3 w-3" />
-              {format(new Date(), "EEEE, MMM d")}
+              {format(new Date(), "MMM d, yyyy")}
             </Badge>
           </div>
-        </div>
-
-        {/* Main Content */}
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
-            <TabsTrigger value="submit" className="gap-2">
-              <Send className="h-4 w-4" />
-              Submit Report
-            </TabsTrigger>
-            <TabsTrigger value="history" className="gap-2">
-              <History className="h-4 w-4" />
-              Report History
-            </TabsTrigger>
-          </TabsList>
 
           {/* Submit Report Tab */}
-          <TabsContent value="submit" className="space-y-6">
+          <TabsContent value="submit" className="space-y-4 mt-4">
             {/* Status Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Card className="border-0 shadow-sm bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/50 dark:to-blue-900/30">
                 <CardContent className="p-4">
                   <div className="flex items-center gap-3">
@@ -386,7 +516,7 @@ export default function ShiftReportPage() {
                     <div>
                       <p className="text-xs text-purple-600 dark:text-purple-400 font-medium">This Month</p>
                       <p className="text-sm font-semibold text-purple-900 dark:text-purple-100">
-                        {stats.total} Report{stats.total !== 1 ? "s" : ""}
+                        {currentMonthStats.total} Report{currentMonthStats.total !== 1 ? "s" : ""}
                       </p>
                     </div>
                   </div>
@@ -410,11 +540,11 @@ export default function ShiftReportPage() {
                   </div>
                   <h3 className="text-lg font-semibold mb-2">Report Already Submitted</h3>
                   <p className="text-sm text-muted-foreground mb-4">
-                    You have already submitted your daily report for {format(new Date(), "MMMM d, yyyy")}.
+                    You have already submitted your daily report for today.
                   </p>
                   <Button variant="outline" onClick={() => setActiveTab("history")}>
                     <Eye className="h-4 w-4 mr-2" />
-                    View Report History
+                    View History
                   </Button>
                 </CardContent>
               </Card>
@@ -426,7 +556,7 @@ export default function ShiftReportPage() {
                       <FileText className="h-5 w-5" />
                     </div>
                     <div>
-                      <CardTitle>Submit Daily Report</CardTitle>
+                      <CardTitle className="text-lg">Submit Report</CardTitle>
                       <p className="text-sm text-muted-foreground mt-0.5">
                         {format(new Date(), "EEEE, MMMM d, yyyy")}
                       </p>
@@ -439,22 +569,19 @@ export default function ShiftReportPage() {
                       e.preventDefault();
                       submitMutation.mutate();
                     }}
-                    className="space-y-6"
+                    className="space-y-5"
                   >
                     {/* Work Details */}
                     <div className="space-y-2">
                       <Label htmlFor="workDetails" className="text-sm font-semibold">
                         Work Details <span className="text-red-500">*</span>
                       </Label>
-                      <p className="text-xs text-muted-foreground">
-                        Describe your tasks, progress, and accomplishments today
-                      </p>
                       <Textarea
                         id="workDetails"
                         value={workDetails}
                         onChange={(e) => setWorkDetails(e.target.value)}
                         placeholder="What did you work on today? List your tasks, meetings, achievements..."
-                        rows={6}
+                        rows={5}
                         required
                         className="resize-none"
                       />
@@ -463,29 +590,30 @@ export default function ShiftReportPage() {
                     {/* Notes */}
                     <div className="space-y-2">
                       <Label htmlFor="notes" className="text-sm font-semibold">
-                        Additional Notes <span className="text-muted-foreground font-normal">(Optional)</span>
+                        Additional Notes <span className="text-muted-foreground font-normal text-xs">(Optional)</span>
                       </Label>
                       <Textarea
                         id="notes"
                         value={notes}
                         onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Any blockers, questions, or notes for tomorrow..."
-                        rows={3}
+                        placeholder="Any blockers, questions, or notes..."
+                        rows={2}
                         className="resize-none"
                       />
                     </div>
 
                     {/* Loom Videos */}
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       <Label className="text-sm font-semibold flex items-center gap-2">
                         <Video className="h-4 w-4 text-red-500" />
-                        Loom Video Links <span className="text-muted-foreground font-normal">(Optional)</span>
+                        Video Links <span className="text-muted-foreground font-normal text-xs">(Optional)</span>
                       </Label>
                       <div className="flex gap-2">
                         <Input
                           value={newVideoLink}
                           onChange={(e) => setNewVideoLink(e.target.value)}
                           placeholder="https://loom.com/share/..."
+                          className="text-sm"
                           onKeyPress={(e) => {
                             if (e.key === "Enter") {
                               e.preventDefault();
@@ -498,24 +626,17 @@ export default function ShiftReportPage() {
                         </Button>
                       </div>
                       {loomVideos.length > 0 && (
-                        <div className="space-y-2">
+                        <div className="space-y-1.5">
                           {loomVideos.map((video, index) => (
-                            <div key={index} className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-                              <Video className="h-4 w-4 text-red-500 shrink-0" />
-                              <a 
-                                href={video} 
-                                target="_blank" 
-                                rel="noopener noreferrer" 
-                                className="text-sm text-primary hover:underline truncate flex-1"
-                              >
-                                {video}
-                              </a>
+                            <div key={index} className="flex items-center gap-2 p-2 rounded-lg bg-red-50 dark:bg-red-900/20">
+                              <Video className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                              <span className="text-xs text-red-700 dark:text-red-400 truncate flex-1">{video}</span>
                               <Button
                                 type="button"
                                 size="icon"
                                 variant="ghost"
                                 onClick={() => removeVideoLink(index)}
-                                className="h-6 w-6 shrink-0"
+                                className="h-5 w-5 shrink-0"
                               >
                                 <X className="h-3 w-3" />
                               </Button>
@@ -526,16 +647,17 @@ export default function ShiftReportPage() {
                     </div>
 
                     {/* References */}
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       <Label className="text-sm font-semibold flex items-center gap-2">
                         <Link2 className="h-4 w-4 text-blue-500" />
-                        Reference Links <span className="text-muted-foreground font-normal">(Optional)</span>
+                        Reference Links <span className="text-muted-foreground font-normal text-xs">(Optional)</span>
                       </Label>
                       <div className="flex gap-2">
                         <Input
                           value={newReference}
                           onChange={(e) => setNewReference(e.target.value)}
                           placeholder="Add link to PR, doc, design..."
+                          className="text-sm"
                           onKeyPress={(e) => {
                             if (e.key === "Enter") {
                               e.preventDefault();
@@ -548,24 +670,17 @@ export default function ShiftReportPage() {
                         </Button>
                       </div>
                       {references.length > 0 && (
-                        <div className="space-y-2">
+                        <div className="space-y-1.5">
                           {references.map((ref, index) => (
-                            <div key={index} className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-                              <Link2 className="h-4 w-4 text-blue-500 shrink-0" />
-                              <a 
-                                href={ref} 
-                                target="_blank" 
-                                rel="noopener noreferrer" 
-                                className="text-sm text-primary hover:underline truncate flex-1"
-                              >
-                                {ref}
-                              </a>
+                            <div key={index} className="flex items-center gap-2 p-2 rounded-lg bg-blue-50 dark:bg-blue-900/20">
+                              <Link2 className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                              <span className="text-xs text-blue-700 dark:text-blue-400 truncate flex-1">{ref}</span>
                               <Button
                                 type="button"
                                 size="icon"
                                 variant="ghost"
                                 onClick={() => removeReference(index)}
-                                className="h-6 w-6 shrink-0"
+                                className="h-5 w-5 shrink-0"
                               >
                                 <X className="h-3 w-3" />
                               </Button>
@@ -603,48 +718,132 @@ export default function ShiftReportPage() {
           </TabsContent>
 
           {/* Report History Tab */}
-          <TabsContent value="history" className="space-y-6">
-            {/* Filters */}
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-                  <SelectTrigger className="w-[180px]">
-                    <Calendar className="h-4 w-4 mr-2 text-muted-foreground" />
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {getMonthOptions().map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                
-                <Button variant="ghost" size="icon" onClick={() => refetchReports()}>
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
+          <TabsContent value="history" className="space-y-4 mt-4">
+            {/* Advanced Filters */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Stats */}
+              <div className="flex items-center gap-1.5 mr-2">
+                <StatPill icon={FileText} value={stats.total} label="Reports" color="text-slate-500" />
+                {stats.totalVideos > 0 && (
+                  <StatPill icon={Video} value={stats.totalVideos} label="Videos" color="text-red-500" />
+                )}
+                {stats.totalRefs > 0 && (
+                  <StatPill icon={Link2} value={stats.totalRefs} label="Links" color="text-blue-500" />
+                )}
               </div>
 
-              <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                <span className="flex items-center gap-1.5">
-                  <Circle className="h-2 w-2 fill-primary text-primary" />
-                  {stats.total} reports
-                </span>
-                {stats.withVideos > 0 && (
-                  <span className="flex items-center gap-1.5">
-                    <Video className="h-3 w-3" />
-                    {stats.withVideos}
-                  </span>
+              <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+
+              {/* Search */}
+              <div className="relative flex-1 min-w-[150px] max-w-[200px]">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                <Input
+                  placeholder="Search reports..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-8 pl-8 text-xs bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700"
+                />
+              </div>
+
+              {/* Year Filter */}
+              <Select value={String(selectedYear)} onValueChange={handleYearChange}>
+                <SelectTrigger className="h-8 w-[90px] text-xs bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+                  <CalendarDays className="h-3 w-3 mr-1.5 text-slate-400" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {getYearOptions().map((year) => (
+                    <SelectItem key={year} value={String(year)}>
+                      {year}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {/* Month Filter */}
+              <Select value={selectedMonthNum} onValueChange={handleMonthChange}>
+                <SelectTrigger className="h-8 w-[120px] text-xs bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+                  <Calendar className="h-3 w-3 mr-1.5 text-slate-400" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {getMonthOptionsForYear(selectedYear).map((month) => (
+                    <SelectItem key={month.value} value={month.value}>
+                      {month.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {/* Day Filter */}
+              <Select value={selectedDate || "all_dates"} onValueChange={(v) => setSelectedDate(v === "all_dates" ? "" : v)}>
+                <SelectTrigger className="h-8 w-[100px] text-xs bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+                  <SelectValue placeholder="All Days" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all_dates">All Days</SelectItem>
+                  {availableDates.map((date) => (
+                    <SelectItem key={date} value={date}>
+                      {format(parseISO(date), "MMM d")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {/* Actions */}
+              <div className="flex items-center gap-1 ml-auto">
+                {hasActiveFilters && (
+                  <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={clearFilters}>
+                    <X className="h-3 w-3 mr-1" />
+                    Clear
+                  </Button>
                 )}
-                {stats.withRefs > 0 && (
-                  <span className="flex items-center gap-1.5">
-                    <Link2 className="h-3 w-3" />
-                    {stats.withRefs}
-                  </span>
-                )}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="h-8 w-8" 
+                      onClick={() => refetchReports()}
+                      disabled={reportsLoading}
+                    >
+                      <RefreshCw className={cn("h-3.5 w-3.5", reportsLoading && "animate-spin")} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Refresh</TooltipContent>
+                </Tooltip>
               </div>
             </div>
+
+            {/* Results Count */}
+            <div className="flex items-center justify-between px-1">
+              <p className="text-xs text-muted-foreground">
+                <span className="font-semibold text-foreground">{filteredReports.length}</span> reports
+                {selectedDate && (
+                  <span> for {format(parseISO(selectedDate), "MMMM d, yyyy")}</span>
+                )}
+                {!selectedDate && (
+                  <span> in {format(parseISO(selectedMonth + "-01"), "MMMM yyyy")}</span>
+                )}
+              </p>
+            </div>
+
+            {/* Error State */}
+            {reportsError && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription className="flex items-center justify-between">
+                  <span>{(reportsError as Error).message || "Failed to load reports"}</span>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => refetchReports()}
+                  >
+                    Retry
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )}
 
             {/* Reports List */}
             {reportsLoading ? (
@@ -652,21 +851,30 @@ export default function ShiftReportPage() {
                 <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">Loading reports...</p>
               </div>
-            ) : sortedReports.length === 0 ? (
+            ) : filteredReports.length === 0 ? (
               <Card className="border-0 shadow-sm">
                 <CardContent className="py-12 text-center">
-                  <div className="w-16 h-16 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-4">
-                    <FileText className="h-8 w-8 text-slate-400" />
+                  <div className="w-14 h-14 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-4">
+                    <FileText className="h-6 w-6 text-slate-400" />
                   </div>
                   <h3 className="text-lg font-semibold mb-2">No Reports Found</h3>
-                  <p className="text-sm text-muted-foreground">
-                    No reports submitted for {format(parseISO(selectedMonth + "-01"), "MMMM yyyy")}
+                  <p className="text-sm text-muted-foreground mb-4">
+                    {hasActiveFilters 
+                      ? "Try adjusting your filters"
+                      : `No reports for ${format(parseISO(selectedMonth + "-01"), "MMMM yyyy")}`
+                    }
                   </p>
+                  {hasActiveFilters && (
+                    <Button variant="outline" size="sm" onClick={clearFilters}>
+                      <X className="h-3 w-3 mr-1" />
+                      Clear Filters
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {sortedReports.map((report: any) => (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {filteredReports.map((report: any) => (
                   <ReportCard
                     key={report.id}
                     report={report}
@@ -731,7 +939,7 @@ export default function ShiftReportPage() {
                       <div>
                         <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
                           <Video className="h-4 w-4 text-red-500" />
-                          Video Links
+                          Video Links ({videos.length})
                         </h4>
                         <div className="space-y-2">
                           {videos.map((video: string, i: number) => (
@@ -740,11 +948,11 @@ export default function ShiftReportPage() {
                               href={video}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="flex items-center gap-2 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors group"
+                              className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors group"
                             >
                               <Video className="h-4 w-4 text-red-500 shrink-0" />
-                              <span className="text-sm text-primary truncate flex-1">{video}</span>
-                              <ExternalLink className="h-3 w-3 text-muted-foreground group-hover:text-primary shrink-0" />
+                              <span className="text-sm text-red-700 dark:text-red-400 truncate flex-1">{video}</span>
+                              <ExternalLink className="h-3 w-3 text-red-400 group-hover:text-red-600 shrink-0" />
                             </a>
                           ))}
                         </div>
@@ -760,7 +968,7 @@ export default function ShiftReportPage() {
                       <div>
                         <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
                           <Link2 className="h-4 w-4 text-blue-500" />
-                          Reference Links
+                          Reference Links ({refs.length})
                         </h4>
                         <div className="space-y-2">
                           {refs.map((ref: string, i: number) => (
@@ -769,11 +977,11 @@ export default function ShiftReportPage() {
                               href={ref}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="flex items-center gap-2 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors group"
+                              className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors group"
                             >
                               <Link2 className="h-4 w-4 text-blue-500 shrink-0" />
-                              <span className="text-sm text-primary truncate flex-1">{ref}</span>
-                              <ExternalLink className="h-3 w-3 text-muted-foreground group-hover:text-primary shrink-0" />
+                              <span className="text-sm text-blue-700 dark:text-blue-400 truncate flex-1">{ref}</span>
+                              <ExternalLink className="h-3 w-3 text-blue-400 group-hover:text-blue-600 shrink-0" />
                             </a>
                           ))}
                         </div>
@@ -784,14 +992,10 @@ export default function ShiftReportPage() {
                   {/* Metadata */}
                   <Separator />
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
                       Submitted: {format(new Date(selectedReport.createdAt), "MMM d, yyyy 'at' h:mm a")}
                     </span>
-                    {selectedReport.updatedAt && selectedReport.updatedAt !== selectedReport.createdAt && (
-                      <span>
-                        Updated: {format(new Date(selectedReport.updatedAt), "MMM d, yyyy 'at' h:mm a")}
-                      </span>
-                    )}
                   </div>
                 </div>
               </>

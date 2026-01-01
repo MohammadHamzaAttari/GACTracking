@@ -1,7 +1,7 @@
 // client/src/pages/admin/attendance.tsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, isToday, isSameDay } from "date-fns";
+import { format, parseISO, startOfDay, isSameDay } from "date-fns";
 import {
   Calendar as CalendarIcon,
   Search,
@@ -60,6 +60,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 import type { SafeUser, Shift, Break } from "@shared/schema";
 
 // Types
@@ -68,12 +69,24 @@ interface ShiftWithUser extends Shift {
   breaks?: Break[];
 }
 
+interface AttendanceRecord {
+  employee: SafeUser;
+  shift: ShiftWithUser | null;
+}
+
 interface AttendanceStats {
   total: number;
   present: number;
   late: number;
   absent: number;
   onBreak: number;
+}
+
+// API Response Types
+interface ShiftsResponse {
+  shifts: ShiftWithUser[];
+  date: string;
+  total: number;
 }
 
 // Helpers
@@ -93,36 +106,81 @@ function getAvatarGradient(name: string) {
   return gradients[(name?.charCodeAt(0) || 0) % gradients.length];
 }
 
-function formatTime(date: string | Date | null): string {
+function formatTime(date: string | Date | null | undefined): string {
   if (!date) return "—";
-  return format(new Date(date), "h:mm a");
+  try {
+    const d = typeof date === 'string' ? new Date(date) : date;
+    if (isNaN(d.getTime())) return "—";
+    return format(d, "h:mm a");
+  } catch {
+    return "—";
+  }
 }
 
-function calculateDuration(clockIn: string | Date | null, clockOut: string | Date | null, breaks?: Break[]): string {
+function parseTimeToDate(timeString: string | null, baseDate: Date): Date | null {
+  if (!timeString) return null;
+  try {
+    const [hours, minutes] = timeString.split(':').map(Number);
+    const date = new Date(baseDate);
+    date.setHours(hours, minutes, 0, 0);
+    return date;
+  } catch {
+    return null;
+  }
+}
+
+function calculateDuration(
+  clockIn: string | Date | null | undefined, 
+  clockOut: string | Date | null | undefined, 
+  breaks?: Break[]
+): string {
   if (!clockIn) return "—";
   
-  const start = new Date(clockIn);
-  const end = clockOut ? new Date(clockOut) : new Date();
-  let totalMinutes = Math.floor((end.getTime() - start.getTime()) / 60000);
-  
-  // Subtract break time
-  if (breaks) {
-    breaks.forEach(b => {
-      if (b.startTime) {
-        const breakStart = new Date(b.startTime);
-        const breakEnd = b.endTime ? new Date(b.endTime) : new Date();
-        totalMinutes -= Math.floor((breakEnd.getTime() - breakStart.getTime()) / 60000);
-      }
-    });
+  try {
+    const start = new Date(clockIn);
+    if (isNaN(start.getTime())) return "—";
+    
+    const end = clockOut ? new Date(clockOut) : new Date();
+    if (isNaN(end.getTime())) return "—";
+    
+    let totalMinutes = Math.floor((end.getTime() - start.getTime()) / 60000);
+    
+    // Subtract break time
+    if (breaks && Array.isArray(breaks)) {
+      breaks.forEach(b => {
+        if (b.startTime) {
+          const breakStart = new Date(b.startTime);
+          const breakEnd = b.endTime ? new Date(b.endTime) : new Date();
+          if (!isNaN(breakStart.getTime()) && !isNaN(breakEnd.getTime())) {
+            totalMinutes -= Math.floor((breakEnd.getTime() - breakStart.getTime()) / 60000);
+          }
+        }
+      });
+    }
+    
+    if (totalMinutes <= 0) return "—";
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    return `${hours}h ${mins}m`;
+  } catch {
+    return "—";
   }
-  
-  if (totalMinutes <= 0) return "—";
-  const hours = Math.floor(totalMinutes / 60);
-  const mins = totalMinutes % 60;
-  return `${hours}h ${mins}m`;
 }
 
-function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser) {
+function isShiftForDate(shift: Shift, targetDate: Date): boolean {
+  // Check if shift date matches the target date
+  if (!shift.date) return false;
+  
+  try {
+    const shiftDate = startOfDay(new Date(shift.date));
+    const target = startOfDay(targetDate);
+    return isSameDay(shiftDate, target);
+  } catch {
+    return false;
+  }
+}
+
+function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, selectedDate: Date) {
   if (!shift) {
     return { 
       status: "absent", 
@@ -133,7 +191,8 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser) {
     };
   }
 
-  const hasActiveBreak = shift.breaks?.some(b => !b.endTime);
+  // Check for active breaks
+  const hasActiveBreak = shift.breaks?.some(b => b.startTime && !b.endTime);
   if (hasActiveBreak) {
     return { 
       status: "break", 
@@ -144,29 +203,34 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser) {
     };
   }
 
-  const isWorking = (shift.morningClockIn && !shift.morningClockOut) || 
-                    (shift.eveningClockIn && !shift.eveningClockOut);
+  const morningIn = shift.morningClockIn;
+  const morningOut = shift.morningClockOut;
+  const eveningIn = shift.eveningClockIn;
+  const eveningOut = shift.eveningClockOut;
+
+  const isCurrentlyWorking = (morningIn && !morningOut) || (eveningIn && !eveningOut);
   
-  if (isWorking) {
-    // Check if late (if employee has shift start time)
+  if (isCurrentlyWorking) {
+    // Check if late (compare with expected shift start time)
     const expectedStart = employee.shiftStartTime;
-    const actualStart = shift.morningClockIn || shift.eveningClockIn;
+    const actualStart = morningIn || eveningIn;
     
     if (expectedStart && actualStart) {
-      const [expectedHour, expectedMin] = expectedStart.split(':').map(Number);
+      const expectedTime = parseTimeToDate(expectedStart, selectedDate);
       const actualTime = new Date(actualStart);
-      const expectedTime = new Date(actualTime);
-      expectedTime.setHours(expectedHour, expectedMin, 0, 0);
       
-      // If clocked in more than 15 minutes late
-      if (actualTime.getTime() - expectedTime.getTime() > 15 * 60 * 1000) {
-        return { 
-          status: "late", 
-          label: "Late", 
-          color: "text-amber-600",
-          bg: "bg-amber-50 dark:bg-amber-900/30",
-          icon: AlertCircle
-        };
+      if (expectedTime && !isNaN(actualTime.getTime())) {
+        // If clocked in more than 15 minutes late
+        const lateThresholdMs = 15 * 60 * 1000;
+        if (actualTime.getTime() - expectedTime.getTime() > lateThresholdMs) {
+          return { 
+            status: "late", 
+            label: "Late", 
+            color: "text-amber-600",
+            bg: "bg-amber-50 dark:bg-amber-900/30",
+            icon: AlertCircle
+          };
+        }
       }
     }
     
@@ -179,7 +243,8 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser) {
     };
   }
 
-  if (shift.morningClockOut || shift.eveningClockOut) {
+  // Has completed a shift
+  if (morningOut || eveningOut) {
     return { 
       status: "completed", 
       label: "Completed", 
@@ -191,25 +256,11 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser) {
 
   return { 
     status: "absent", 
-    label: "Absent", 
+    label: "No Record", 
     color: "text-slate-400",
     bg: "bg-slate-50 dark:bg-slate-800",
     icon: XCircle
   };
-}
-
-// Generate month options
-function getMonthOptions() {
-  const options = [];
-  const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    options.push({
-      value: format(date, "yyyy-MM"),
-      label: format(date, "MMMM yyyy"),
-    });
-  }
-  return options;
 }
 
 // Mini Stat Pill
@@ -249,12 +300,14 @@ function StatPill({
 // Attendance Row Component
 function AttendanceRow({ 
   employee, 
-  shift 
+  shift,
+  selectedDate
 }: { 
   employee: SafeUser; 
   shift: ShiftWithUser | null;
+  selectedDate: Date;
 }) {
-  const status = getAttendanceStatus(shift, employee);
+  const status = getAttendanceStatus(shift, employee, selectedDate);
   const StatusIcon = status.icon;
   const clockIn = shift?.morningClockIn || shift?.eveningClockIn;
   const clockOut = shift?.morningClockOut || shift?.eveningClockOut;
@@ -278,12 +331,17 @@ function AttendanceRow({
             <p className="font-medium text-sm text-slate-900 dark:text-white">
               {employee.firstName} {employee.lastName}
             </p>
-            {employee.department && (
-              <p className="text-[10px] text-slate-500 flex items-center gap-1">
-                <Building2 className="h-2.5 w-2.5" />
-                {employee.department}
-              </p>
-            )}
+            <div className="flex items-center gap-2 text-[10px] text-slate-500">
+              {employee.department && (
+                <span className="flex items-center gap-1">
+                  <Building2 className="h-2.5 w-2.5" />
+                  {employee.department}
+                </span>
+              )}
+              {employee.employeeId && (
+                <span>#{employee.employeeId}</span>
+              )}
+            </div>
           </div>
         </div>
       </td>
@@ -358,20 +416,22 @@ function AttendanceRow({
 function DepartmentGroup({ 
   department, 
   attendanceData,
+  selectedDate
 }: { 
   department: string; 
-  attendanceData: { employee: SafeUser; shift: ShiftWithUser | null }[];
+  attendanceData: AttendanceRecord[];
+  selectedDate: Date;
 }) {
   const stats = useMemo(() => {
     let present = 0, absent = 0, late = 0;
     attendanceData.forEach(({ employee, shift }) => {
-      const status = getAttendanceStatus(shift, employee).status;
+      const status = getAttendanceStatus(shift, employee, selectedDate).status;
       if (status === "present" || status === "completed" || status === "break") present++;
       else if (status === "late") late++;
       else absent++;
     });
     return { present, absent, late, total: attendanceData.length };
-  }, [attendanceData]);
+  }, [attendanceData, selectedDate]);
 
   return (
     <div className="mb-6">
@@ -420,13 +480,174 @@ function DepartmentGroup({
           </TableHeader>
           <TableBody>
             {attendanceData.map(({ employee, shift }) => (
-              <AttendanceRow key={employee.id} employee={employee} shift={shift} />
+              <AttendanceRow 
+                key={employee.id} 
+                employee={employee} 
+                shift={shift} 
+                selectedDate={selectedDate}
+              />
             ))}
           </TableBody>
         </Table>
       </Card>
     </div>
   );
+}
+
+// Custom hook for fetching attendance data
+function useAttendanceData(selectedDate: Date) {
+  const dateParam = format(selectedDate, "yyyy-MM-dd");
+  const { toast } = useToast();
+
+  // Fetch all employees
+  const { 
+    data: employees = [], 
+    isLoading: employeesLoading,
+    error: employeesError 
+  } = useQuery<SafeUser[]>({
+    queryKey: ["/api/admin/employees"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/admin/employees");
+      if (!res.ok) {
+        throw new Error("Failed to fetch employees");
+      }
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    select: (data) => {
+      // Filter only active employees
+      return data.filter(emp => 
+        emp.role === "employee" && 
+        emp.status === "active"
+      );
+    },
+  });
+
+  // Fetch shifts for selected date
+  const { 
+    data: shifts = [], 
+    isLoading: shiftsLoading,
+    error: shiftsError,
+    refetch 
+  } = useQuery<ShiftWithUser[]>({
+    queryKey: ["/api/admin/shifts", { date: dateParam }],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/admin/shifts?date=${dateParam}`);
+      if (!res.ok) {
+        console.error(`Failed to fetch shifts: ${res.status}`);
+        throw new Error("Failed to fetch shifts");
+      }
+      const data = await res.json();
+      
+      // Handle both array and object response formats
+      if (Array.isArray(data)) {
+        return data;
+      } else if (data.shifts && Array.isArray(data.shifts)) {
+        return data.shifts;
+      }
+      
+      console.warn("Unexpected shifts response format:", data);
+      return [];
+    },
+    staleTime: 30 * 1000, // 30 seconds for more real-time updates
+    refetchInterval: 60 * 1000, // Auto-refresh every minute
+    refetchOnWindowFocus: true,
+  });
+
+  // Show error toast if queries fail
+  useEffect(() => {
+    if (employeesError) {
+      toast({
+        title: "Error",
+        description: "Failed to load employees",
+        variant: "destructive",
+      });
+    }
+    if (shiftsError) {
+      toast({
+        title: "Error",
+        description: "Failed to load attendance records",
+        variant: "destructive",
+      });
+    }
+  }, [employeesError, shiftsError, toast]);
+
+  // Map shifts by userId with date validation
+  const shiftsByUserId = useMemo(() => {
+    const map = new Map<string, ShiftWithUser>();
+    
+    shifts.forEach(shift => {
+      // Validate that this shift is for the selected date
+      if (isShiftForDate(shift, selectedDate)) {
+        // Use the most recent shift if multiple exist for same user/date
+        const existing = map.get(shift.userId);
+        if (!existing || new Date(shift.date) > new Date(existing.date)) {
+          map.set(shift.userId, shift);
+        }
+      }
+    });
+    
+    return map;
+  }, [shifts, selectedDate]);
+
+  // Combine employees with their attendance
+  const attendanceData = useMemo((): AttendanceRecord[] => {
+    return employees.map(employee => ({
+      employee,
+      shift: shiftsByUserId.get(employee.id) || null,
+    }));
+  }, [employees, shiftsByUserId]);
+
+  // Get unique departments
+  const departments = useMemo(() => {
+    const depts = new Set<string>();
+    employees.forEach(emp => {
+      if (emp.department) depts.add(emp.department);
+    });
+    return Array.from(depts).sort();
+  }, [employees]);
+
+  // Calculate stats
+  const stats = useMemo((): AttendanceStats => {
+    let present = 0, late = 0, absent = 0, onBreak = 0;
+    
+    attendanceData.forEach(({ employee, shift }) => {
+      const status = getAttendanceStatus(shift, employee, selectedDate).status;
+      switch (status) {
+        case "present":
+        case "completed":
+          present++;
+          break;
+        case "late":
+          late++;
+          break;
+        case "break":
+          onBreak++;
+          break;
+        default:
+          absent++;
+      }
+    });
+    
+    return { 
+      total: employees.length, 
+      present, 
+      late, 
+      absent, 
+      onBreak 
+    };
+  }, [attendanceData, employees.length, selectedDate]);
+
+  return {
+    employees,
+    shifts,
+    attendanceData,
+    departments,
+    stats,
+    isLoading: employeesLoading || shiftsLoading,
+    refetch,
+    shiftsByUserId,
+  };
 }
 
 // Main Component
@@ -437,100 +658,80 @@ export default function AttendancePage() {
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [groupByDepartment, setGroupByDepartment] = useState(true);
 
-  const dateParam = format(selectedDate, "yyyy-MM-dd");
-
-  // Fetch all employees
-  const { data: employees = [] } = useQuery<SafeUser[]>({
-    queryKey: ["/api/admin/employees"],
-    select: (data) => data.filter(emp => emp.role === "employee" && emp.status === "active"),
-  });
-
-  // Fetch shifts for selected date
-  const { data: shifts = [], isLoading, refetch } = useQuery<ShiftWithUser[]>({
-    queryKey: ["/api/admin/shifts", { date: dateParam }],
-    queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/shifts?date=${dateParam}`);
-      if (!res.ok) return [];
-      return res.json();
-    },
-  });
-
-  // Map shifts by userId
-  const shiftsByUserId = useMemo(() => {
-    const map = new Map<string, ShiftWithUser>();
-    shifts.forEach(shift => map.set(shift.userId, shift));
-    return map;
-  }, [shifts]);
-
-  // Combine employees with their attendance
-  const attendanceData = useMemo(() => {
-    return employees.map(employee => ({
-      employee,
-      shift: shiftsByUserId.get(employee.id) || null,
-    }));
-  }, [employees, shiftsByUserId]);
-
-  // Get departments
-  const departments = useMemo(() => {
-    const depts = new Set<string>();
-    employees.forEach(emp => {
-      if (emp.department) depts.add(emp.department);
-    });
-    return Array.from(depts).sort();
-  }, [employees]);
-
-  // Calculate stats
-  const stats = useMemo(() => {
-    let present = 0, late = 0, absent = 0, onBreak = 0;
-    attendanceData.forEach(({ employee, shift }) => {
-      const status = getAttendanceStatus(shift, employee).status;
-      if (status === "present" || status === "completed") present++;
-      else if (status === "late") late++;
-      else if (status === "break") onBreak++;
-      else absent++;
-    });
-    return { total: employees.length, present, late, absent, onBreak };
-  }, [attendanceData, employees]);
+  const { toast } = useToast();
+  
+  const {
+    attendanceData,
+    departments,
+    stats,
+    isLoading,
+    refetch,
+  } = useAttendanceData(selectedDate);
 
   // Filter data
   const filteredData = useMemo(() => {
     let filtered = [...attendanceData];
 
+    // Search filter
     if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(({ employee }) =>
-        `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(query)
-      );
-    }
-
-    if (departmentFilter !== "all") {
-      filtered = filtered.filter(({ employee }) => employee.department === departmentFilter);
-    }
-
-    if (statusFilter !== "all") {
-      filtered = filtered.filter(({ employee, shift }) => {
-        const status = getAttendanceStatus(shift, employee).status;
-        if (statusFilter === "present") return status === "present" || status === "completed";
-        if (statusFilter === "late") return status === "late";
-        if (statusFilter === "absent") return status === "absent";
-        if (statusFilter === "break") return status === "break";
-        return true;
+      const query = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(({ employee }) => {
+        const fullName = `${employee.firstName || ""} ${employee.lastName || ""}`.toLowerCase();
+        const empId = employee.employeeId?.toLowerCase() || "";
+        const email = employee.email?.toLowerCase() || "";
+        return fullName.includes(query) || empId.includes(query) || email.includes(query);
       });
     }
 
+    // Department filter
+    if (departmentFilter !== "all") {
+      filtered = filtered.filter(({ employee }) => 
+        employee.department === departmentFilter
+      );
+    }
+
+    // Status filter
+    if (statusFilter !== "all") {
+      filtered = filtered.filter(({ employee, shift }) => {
+        const status = getAttendanceStatus(shift, employee, selectedDate).status;
+        switch (statusFilter) {
+          case "present":
+            return status === "present" || status === "completed";
+          case "late":
+            return status === "late";
+          case "absent":
+            return status === "absent";
+          case "break":
+            return status === "break";
+          default:
+            return true;
+        }
+      });
+    }
+
+    // Sort by name
+    filtered.sort((a, b) => {
+      const nameA = `${a.employee.firstName || ""} ${a.employee.lastName || ""}`;
+      const nameB = `${b.employee.firstName || ""} ${b.employee.lastName || ""}`;
+      return nameA.localeCompare(nameB);
+    });
+
     return filtered;
-  }, [attendanceData, searchQuery, departmentFilter, statusFilter]);
+  }, [attendanceData, searchQuery, departmentFilter, statusFilter, selectedDate]);
 
   // Group by department
   const groupedData = useMemo(() => {
-    if (!groupByDepartment) return { "All Employees": filteredData };
+    if (!groupByDepartment) {
+      return { "All Employees": filteredData };
+    }
     
-    const groups: Record<string, typeof filteredData> = {};
+    const groups: Record<string, AttendanceRecord[]> = {};
     filteredData.forEach(item => {
       const dept = item.employee.department || "Unassigned";
       if (!groups[dept]) groups[dept] = [];
       groups[dept].push(item);
     });
+    
     return groups;
   }, [filteredData, groupByDepartment]);
 
@@ -548,6 +749,7 @@ export default function AttendancePage() {
   };
 
   const goToToday = () => setSelectedDate(new Date());
+  
   const isTodaySelected = format(selectedDate, "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd");
 
   const clearFilters = () => {
@@ -557,6 +759,60 @@ export default function AttendancePage() {
   };
 
   const hasActiveFilters = searchQuery || statusFilter !== "all" || departmentFilter !== "all";
+
+  const handleRefresh = async () => {
+    try {
+      await refetch();
+      toast({
+        title: "Refreshed",
+        description: "Attendance data updated",
+      });
+    } catch {
+      toast({
+        title: "Error",
+        description: "Failed to refresh data",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleExport = () => {
+    // Generate CSV
+    const headers = ["Employee", "Department", "Status", "Clock In", "Clock Out", "Hours", "Breaks"];
+    const rows = filteredData.map(({ employee, shift }) => {
+      const status = getAttendanceStatus(shift, employee, selectedDate);
+      const clockIn = shift?.morningClockIn || shift?.eveningClockIn;
+      const clockOut = shift?.morningClockOut || shift?.eveningClockOut;
+      return [
+        `${employee.firstName} ${employee.lastName}`,
+        employee.department || "Unassigned",
+        status.label,
+        formatTime(clockIn),
+        formatTime(clockOut),
+        calculateDuration(clockIn, clockOut, shift?.breaks),
+        shift?.breaks?.length || 0,
+      ];
+    });
+
+    const csvContent = [headers, ...rows]
+      .map(row => row.map(cell => `"${cell}"`).join(","))
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `attendance-${format(selectedDate, "yyyy-MM-dd")}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: "Exported",
+      description: `Attendance report for ${format(selectedDate, "MMM d, yyyy")} downloaded`,
+    });
+  };
 
   if (isLoading) {
     return (
@@ -659,11 +915,19 @@ export default function AttendancePage() {
         <div className="relative flex-1 min-w-[140px] max-w-[200px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
           <Input
-            placeholder="Search..."
+            placeholder="Search name, ID..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="h-8 pl-8 text-xs bg-white dark:bg-slate-800 border-0 shadow-sm"
           />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2"
+            >
+              <X className="h-3 w-3 text-slate-400 hover:text-slate-600" />
+            </button>
+          )}
         </div>
 
         {/* Department Filter */}
@@ -673,7 +937,7 @@ export default function AttendancePage() {
             <SelectValue placeholder="All Depts" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Depts</SelectItem>
+            <SelectItem value="all">All Departments</SelectItem>
             {departments.map(dept => (
               <SelectItem key={dept} value={dept}>{dept}</SelectItem>
             ))}
@@ -693,7 +957,7 @@ export default function AttendancePage() {
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            {groupByDepartment ? "Show all" : "Group by department"}
+            {groupByDepartment ? "Show all in one table" : "Group by department"}
           </TooltipContent>
         </Tooltip>
 
@@ -702,18 +966,18 @@ export default function AttendancePage() {
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={clearFilters}>
               <X className="h-3 w-3 mr-1" />
-              Clear
+              Clear filters
             </Button>
           )}
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()}>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleRefresh}>
                 <RefreshCw className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Refresh</TooltipContent>
+            <TooltipContent>Refresh data</TooltipContent>
           </Tooltip>
-          <Button variant="outline" size="sm" className="h-8 text-xs">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={handleExport}>
             <Download className="h-3.5 w-3.5 mr-1.5" />
             Export
           </Button>
@@ -723,12 +987,22 @@ export default function AttendancePage() {
       {/* Info Bar */}
       <div className="flex items-center justify-between px-1">
         <p className="text-xs text-muted-foreground">
-          <span className="font-semibold text-foreground">{filteredData.length}</span> employees
+          Showing <span className="font-semibold text-foreground">{filteredData.length}</span> of {stats.total} employees
           {departmentFilter !== "all" && ` in ${departmentFilter}`}
+          {hasActiveFilters && " (filtered)"}
         </p>
-        <p className="text-[10px] text-muted-foreground">
-          {isTodaySelected ? "Today" : format(selectedDate, "EEEE, MMMM d, yyyy")}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-[10px] text-muted-foreground">
+            {isTodaySelected ? (
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                Live • Today
+              </span>
+            ) : (
+              format(selectedDate, "EEEE, MMMM d, yyyy")
+            )}
+          </p>
+        </div>
       </div>
 
       {/* Main Content */}
@@ -740,9 +1014,16 @@ export default function AttendancePage() {
                 <Users className="h-6 w-6 text-slate-400" />
               </div>
               <p className="font-medium text-slate-900 dark:text-white mb-1">No records found</p>
-              <p className="text-sm text-slate-500">
-                {hasActiveFilters ? "Try adjusting your filters" : "No attendance data for this date"}
+              <p className="text-sm text-slate-500 mb-4">
+                {hasActiveFilters 
+                  ? "Try adjusting your filters or search query" 
+                  : "No attendance data for this date"}
               </p>
+              {hasActiveFilters && (
+                <Button variant="outline" size="sm" onClick={clearFilters}>
+                  Clear all filters
+                </Button>
+              )}
             </div>
           </div>
         ) : groupByDepartment ? (
@@ -754,6 +1035,7 @@ export default function AttendancePage() {
                   key={department}
                   department={department}
                   attendanceData={data}
+                  selectedDate={selectedDate}
                 />
               ))}
           </div>
@@ -772,7 +1054,12 @@ export default function AttendancePage() {
               </TableHeader>
               <TableBody>
                 {filteredData.map(({ employee, shift }) => (
-                  <AttendanceRow key={employee.id} employee={employee} shift={shift} />
+                  <AttendanceRow 
+                    key={employee.id} 
+                    employee={employee} 
+                    shift={shift}
+                    selectedDate={selectedDate}
+                  />
                 ))}
               </TableBody>
             </Table>
