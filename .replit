@@ -40,3 +40,9 @@ waitForPort = 5000
 
 [agent]
 integrations = ["javascript_database:1.0.0"]
+
+[userenv]
+
+[userenv.shared]
+WASENDER_API_KEY = "1f33ffcc17176006c45b3aa01b9e1e66b2c97267a841a0ad1575d6161eb01063"
+WASENDER_GROUP_ID = "120363420072928031@g.us"

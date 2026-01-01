@@ -16,6 +16,13 @@ import {
   SPECIAL_REQUEST_STATUSES
 } from "@shared/schema";
 import { z } from "zod";
+import { 
+  notifyShiftStart, 
+  notifyShiftEnd, 
+  notifyBreakStart, 
+  notifyBreakEnd,
+  notifyDailyReportSubmitted 
+} from "./wasender";
 
 const SALT_ROUNDS = 10;
 
@@ -894,6 +901,14 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         timestamp: now,
       });
       
+      // Send WhatsApp notification (user already fetched above)
+      if (user) {
+        notifyShiftStart({
+          fullName: `${user.firstName} ${user.lastName}`,
+          department: user.department || "Not Assigned"
+        }).catch(err => console.error("WhatsApp notification error:", err));
+      }
+      
       res.json({ 
         ...shift, 
         workingDate, 
@@ -968,6 +983,24 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         details: `Morning shift ended. Total time: ${Math.floor(workMinutes / 60)}h ${workMinutes % 60}m`,
         timestamp: now,
       });
+      
+      // Send WhatsApp notification
+      const user = await storage.getUser(userId);
+      const todayBreaks = await storage.getBreaksByUserAndDate(userId, workingDate);
+      // Filter breaks to only morning shift period
+      const morningBreaks = todayBreaks.filter(b => b.shiftPeriod === "morning");
+      const totalBreakMinutes = morningBreaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
+      
+      if (user) {
+        notifyShiftEnd(
+          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+          new Date(shift.morningClockIn),
+          workMinutes - totalBreakMinutes,
+          morningBreaks.length,
+          totalBreakMinutes,
+          shift.morningLateMinutes || 0
+        ).catch(err => console.error("WhatsApp notification error:", err));
+      }
       
       // Calculate when the day will reset
       const resetTime = new Date(now.getTime() + (SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS * 60 * 60 * 1000));
@@ -1044,6 +1077,15 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         timestamp: now,
       });
       
+      // Send WhatsApp notification
+      const user = await storage.getUser(userId);
+      if (user) {
+        notifyShiftStart({
+          fullName: `${user.firstName} ${user.lastName}`,
+          department: user.department || "Not Assigned"
+        }).catch(err => console.error("WhatsApp notification error:", err));
+      }
+      
       res.json({
         ...shift,
         workingDate,
@@ -1117,6 +1159,24 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         details: `Evening shift ended. Total time: ${Math.floor(workMinutes / 60)}h ${workMinutes % 60}m`,
         timestamp: now,
       });
+      
+      // Send WhatsApp notification
+      const user = await storage.getUser(userId);
+      const todayBreaks = await storage.getBreaksByUserAndDate(userId, workingDate);
+      // Filter breaks to only evening shift period
+      const eveningBreaks = todayBreaks.filter(b => b.shiftPeriod === "evening");
+      const totalBreakMinutes = eveningBreaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
+      
+      if (user) {
+        notifyShiftEnd(
+          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+          new Date(shift.eveningClockIn),
+          workMinutes - totalBreakMinutes,
+          eveningBreaks.length,
+          totalBreakMinutes,
+          shift.eveningLateMinutes || 0
+        ).catch(err => console.error("WhatsApp notification error:", err));
+      }
       
       // Calculate when the day will reset
       const resetTime = new Date(now.getTime() + (SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS * 60 * 60 * 1000));
@@ -1214,6 +1274,15 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         timestamp: now,
       });
       
+      // Send WhatsApp notification
+      const user = await storage.getUser(userId);
+      if (user) {
+        notifyBreakStart(
+          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+          type
+        ).catch(err => console.error("WhatsApp notification error:", err));
+      }
+      
       res.json(breakRecord);
     } catch (error) {
       console.error("Failed to start break:", error);
@@ -1262,6 +1331,16 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         details: `Ended ${activeBreak.type} break (${durationMinutes} minutes)${warning ? ` - ${warning}` : ''}`,
         timestamp: now,
       });
+      
+      // Send WhatsApp notification
+      const user = await storage.getUser(userId);
+      if (user) {
+        notifyBreakEnd(
+          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+          activeBreak.type,
+          durationMinutes
+        ).catch(err => console.error("WhatsApp notification error:", err));
+      }
       
       res.json({ ...updated, warning });
     } catch (error) {
@@ -1739,6 +1818,15 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         details: "Daily shift report submitted",
         timestamp: new Date(),
       });
+      
+      // Send WhatsApp notification
+      const user = await storage.getUser(userId);
+      if (user) {
+        notifyDailyReportSubmitted(
+          { fullName: `${user.firstName} ${user.lastName}`, department: user.department || "Not Assigned" },
+          reportData.workDetails
+        ).catch(err => console.error("WhatsApp notification error:", err));
+      }
       
       res.json(report);
     } catch (error: any) {

@@ -1,0 +1,91 @@
+[7:47 PM, 12/29/2025] +92 325 5142424: 🌅 SHIFT STARTED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+⏰ Session: Morning
+🕐 Started at: 07:47 PM
+
+✅ Employee has checked in successfully.
+[7:48 PM, 12/29/2025] +92 325 5142424: 🕌 BREAK STARTED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+📋 Break Type: prayer
+🕐 Started at: 07:48 PM
+
+⏸️ Employee is now on break.
+[7:48 PM, 12/29/2025] +92 325 5142424: 🚨 BREAK ENDED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+📋 Break Type: prayer
+🕐 Ended at: 07:48 PM
+⏱️ Duration: 0 minutes
+
+▶️ Employee has resumed work.
+[7:49 PM, 12/29/2025] +92 325 5142424: 🕌 BREAK STARTED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+📋 Break Type: meal
+🕐 Started at: 07:49 PM
+
+⏸️ Employee is now on break.
+[7:49 PM, 12/29/2025] +92 325 5142424: 🚨 BREAK ENDED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+📋 Break Type: meal
+🕐 Ended at: 07:49 PM
+⏱️ Duration: 0 minutes
+
+▶️ Employee has resumed work.
+[7:59 PM, 12/29/2025] +92 325 5142424: 🔴 SHIFT REPORT
+
+⌛ Late By: 0 minutes
+👤 Employee: Hamza dev
+🏢 Department: Development
+⏰ Shift: Morning
+🌅 Shift Started At: 07:47 PM
+🌇 Shift Ended At: 07:59 PM
+
+📊 Shift Summary:
+✅ Total Worked Hours: 0h 0m
+🕒 Required Working Hours: 8h 0m
+☕ Breaks Taken: 2
+☕ Total break Duration: 0 minutes
+
+✅ Employee has checked out successfully.
+[8:13 PM, 12/29/2025] +92 325 5142424: 🌅 SHIFT STARTED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+⏰ Session: Evening
+🕐 Started at: 08:13 PM
+
+✅ Employee has checked in successfully.
+[8:14 PM, 12/29/2025] +92 325 5142424: 🕌 BREAK STARTED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+📋 Break Type: urgent
+🕐 Started at: 08:14 PM
+
+⏸️ Employee is now on break.
+[8:17 PM, 12/29/2025] +92 325 5142424: 🚨 BREAK ENDED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+📋 Break Type: urgent
+🕐 Ended at: 08:17 PM
+⏱️ Duration: 3 minutes
+
+▶️ Employee has resumed work.
+[8:17 PM, 12/29/2025] +92 325 5142424: 🕌 BREAK STARTED
+
+👤 Employee: Hamza dev
+🏢 Department: Development
+📋 Break Type: prayer
+🕐 Started at: 08:17 PM
+
+⏸️ Employee is now on break.
