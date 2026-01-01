@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 import type { SafeUser } from "@shared/schema";
+import { queryClient } from "./queryClient";
 
 interface AuthContextType {
   user: SafeUser | null;
@@ -31,11 +32,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = (userData: SafeUser) => {
+    // Clear any cached data from previous user session
+    queryClient.clear();
     setUser(userData);
   };
 
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    // CRITICAL: Clear all cached queries to prevent data leakage between users
+    queryClient.clear();
     setUser(null);
   };
 
