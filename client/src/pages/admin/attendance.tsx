@@ -549,8 +549,8 @@ function useAttendanceData(selectedDate: Date) {
       console.warn("Unexpected shifts response format:", data);
       return [];
     },
-    staleTime: 30 * 1000, // 30 seconds for more real-time updates
-    refetchInterval: 60 * 1000, // Auto-refresh every minute
+    staleTime: 1000, // 1 second for real-time updates
+    refetchInterval: 1000, // Auto-refresh every second
     refetchOnWindowFocus: true,
   });
 

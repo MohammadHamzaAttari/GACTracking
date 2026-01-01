@@ -415,7 +415,7 @@ export default function AdminDashboard() {
   // Fetch today's shifts
   const { data: todayShifts = [], isLoading: loadingShifts, refetch } = useQuery<TodayShift[]>({
     queryKey: ["/api/admin/shifts/today"],
-    refetchInterval: 30000,
+    refetchInterval: 1000,
   });
 
   // Map shifts by user ID

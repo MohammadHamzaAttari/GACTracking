@@ -643,7 +643,7 @@ function BusinessDevelopmentBoard() {
       if (!res.ok) throw new Error("Failed to fetch targets");
       return res.json();
     },
-    refetchInterval: 30000,
+    refetchInterval: 1000,
   });
 
   const deleteMutation = useMutation({
@@ -943,7 +943,7 @@ export default function EmployeeDashboard() {
 
   const { data: todayStatus, isLoading } = useQuery<TodayStatus>({
     queryKey: ["/api/employee/today"],
-    refetchInterval: 30000,
+    refetchInterval: 1000,
   });
 
   const shift = todayStatus?.shift;

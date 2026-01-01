@@ -244,7 +244,7 @@ export default function ShiftReportPage() {
   // Get today's status (shift info)
   const { data: todayStatus, isLoading: statusLoading } = useQuery({
     queryKey: ["/api/employee/today"],
-    refetchInterval: 30000,
+    refetchInterval: 1000,
   });
 
   const todayShift = todayStatus?.shift;

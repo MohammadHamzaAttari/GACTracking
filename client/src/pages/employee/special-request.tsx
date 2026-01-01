@@ -212,7 +212,7 @@ export default function SpecialRequestPage() {
       return data;
     },
     staleTime: 0,
-    refetchInterval: 10000,
+    refetchInterval: 1000,
   });
 
   // Filter and sort requests
@@ -253,7 +253,7 @@ export default function SpecialRequestPage() {
       return res.json();
     },
     enabled: !!selectedRequestId,
-    refetchInterval: 5000,
+    refetchInterval: 1000,
   });
 
   const selectedRequest = filteredRequests.find((r: any) => r.id === selectedRequestId);

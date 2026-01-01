@@ -294,7 +294,7 @@ export default function AdminSpecialRequestsPage() {
       if (!res.ok) throw new Error("Failed to fetch requests");
       return res.json();
     },
-    refetchInterval: 15000,
+    refetchInterval: 1000,
   });
 
   // Fetch comments
@@ -307,7 +307,7 @@ export default function AdminSpecialRequestsPage() {
       return res.json();
     },
     enabled: !!selectedRequestId,
-    refetchInterval: 5000,
+    refetchInterval: 1000,
   });
 
   // Departments

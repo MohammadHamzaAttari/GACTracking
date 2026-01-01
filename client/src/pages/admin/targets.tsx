@@ -753,7 +753,7 @@ export default function AdminTargetBoard() {
       if (!res.ok) throw new Error("Failed to fetch targets");
       return res.json();
     },
-    refetchInterval: 60000, // Refresh every minute
+    refetchInterval: 1000, // Refresh every second
   });
 
   // Verify mutation
