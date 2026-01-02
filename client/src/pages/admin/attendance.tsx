@@ -80,6 +80,7 @@ interface AttendanceStats {
   late: number;
   absent: number;
   onBreak: number;
+  totalLateMinutes: number;
 }
 
 // API Response Types
@@ -129,22 +130,39 @@ function parseTimeToDate(timeString: string | null, baseDate: Date): Date | null
   }
 }
 
+// NEW: Calculate total late minutes (morning + evening)
+function getTotalLateMinutes(shift: ShiftWithUser | null): number {
+  if (!shift) return 0;
+  const morningLate = shift.morningLateMinutes || 0;
+  const eveningLate = shift.eveningLateMinutes || 0;
+  return morningLate + eveningLate;
+}
+
+// NEW: Format late minutes for display
+function formatLateMinutes(minutes: number): string {
+  if (minutes <= 0) return "—";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
 function calculateDuration(
   clockIn: string | Date | null | undefined, 
   clockOut: string | Date | null | undefined, 
   breaks?: Break[]
 ): string {
   if (!clockIn) return "—";
-  
+
   try {
     const start = new Date(clockIn);
     if (isNaN(start.getTime())) return "—";
-    
+
     const end = clockOut ? new Date(clockOut) : new Date();
     if (isNaN(end.getTime())) return "—";
-    
+
     let totalMinutes = Math.floor((end.getTime() - start.getTime()) / 60000);
-    
+
     // Subtract break time
     if (breaks && Array.isArray(breaks)) {
       breaks.forEach(b => {
@@ -157,7 +175,7 @@ function calculateDuration(
         }
       });
     }
-    
+
     if (totalMinutes <= 0) return "—";
     const hours = Math.floor(totalMinutes / 60);
     const mins = totalMinutes % 60;
@@ -170,7 +188,7 @@ function calculateDuration(
 function isShiftForDate(shift: Shift, targetDate: Date): boolean {
   // Check if shift date matches the target date
   if (!shift.date) return false;
-  
+
   try {
     const shiftDate = startOfDay(new Date(shift.date));
     const target = startOfDay(targetDate);
@@ -209,31 +227,22 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, se
   const eveningOut = shift.eveningClockOut;
 
   const isCurrentlyWorking = (morningIn && !morningOut) || (eveningIn && !eveningOut);
-  
+
+  // Check if late based on stored late minutes
+  const totalLateMinutes = getTotalLateMinutes(shift);
+  const isLate = totalLateMinutes > 0;
+
   if (isCurrentlyWorking) {
-    // Check if late (compare with expected shift start time)
-    const expectedStart = employee.shiftStartTime;
-    const actualStart = morningIn || eveningIn;
-    
-    if (expectedStart && actualStart) {
-      const expectedTime = parseTimeToDate(expectedStart, selectedDate);
-      const actualTime = new Date(actualStart);
-      
-      if (expectedTime && !isNaN(actualTime.getTime())) {
-        // If clocked in more than 15 minutes late
-        const lateThresholdMs = 15 * 60 * 1000;
-        if (actualTime.getTime() - expectedTime.getTime() > lateThresholdMs) {
-          return { 
-            status: "late", 
-            label: "Late", 
-            color: "text-amber-600",
-            bg: "bg-amber-50 dark:bg-amber-900/30",
-            icon: AlertCircle
-          };
-        }
-      }
+    if (isLate) {
+      return { 
+        status: "late", 
+        label: "Late", 
+        color: "text-amber-600",
+        bg: "bg-amber-50 dark:bg-amber-900/30",
+        icon: AlertCircle
+      };
     }
-    
+
     return { 
       status: "present", 
       label: "Working", 
@@ -245,6 +254,15 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, se
 
   // Has completed a shift
   if (morningOut || eveningOut) {
+    if (isLate) {
+      return { 
+        status: "completed_late", 
+        label: "Completed (Late)", 
+        color: "text-amber-600",
+        bg: "bg-amber-50 dark:bg-amber-900/30",
+        icon: AlertCircle
+      };
+    }
     return { 
       status: "completed", 
       label: "Completed", 
@@ -273,7 +291,7 @@ function StatPill({
   onClick
 }: { 
   icon: any; 
-  value: number; 
+  value: number | string; 
   label: string; 
   color: string;
   active?: boolean;
@@ -314,6 +332,9 @@ function AttendanceRow({
   const workDuration = calculateDuration(clockIn, clockOut, shift?.breaks);
   const breakCount = shift?.breaks?.length || 0;
 
+  // Calculate total late minutes (morning + evening)
+  const totalLateMinutes = getTotalLateMinutes(shift);
+
   return (
     <tr className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
       {/* Employee */}
@@ -337,9 +358,6 @@ function AttendanceRow({
                   <Building2 className="h-2.5 w-2.5" />
                   {employee.department}
                 </span>
-              )}
-              {employee.employeeId && (
-                <span>#{employee.employeeId}</span>
               )}
             </div>
           </div>
@@ -386,6 +404,35 @@ function AttendanceRow({
         </div>
       </td>
 
+      {/* Late Minutes - NEW COLUMN */}
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-2 text-sm">
+          <AlertCircle className={cn(
+            "h-4 w-4",
+            totalLateMinutes > 0 ? "text-amber-500" : "text-slate-400"
+          )} />
+          <span className={cn(
+            "font-medium",
+            totalLateMinutes > 0 ? "text-amber-600 dark:text-amber-400" : "text-slate-400"
+          )}>
+            {formatLateMinutes(totalLateMinutes)}
+          </span>
+          {/* Show breakdown if both morning and evening have late minutes */}
+          {shift && shift.morningLateMinutes && shift.morningLateMinutes > 0 && 
+           shift.eveningLateMinutes && shift.eveningLateMinutes > 0 && (
+            <Tooltip>
+              <TooltipTrigger>
+                <span className="text-[10px] text-slate-400">(M+E)</span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Morning: {shift.morningLateMinutes}m</p>
+                <p>Evening: {shift.eveningLateMinutes}m</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+      </td>
+
       {/* Work Hours */}
       <td className="py-3 px-4">
         <div className="flex items-center gap-2 text-sm">
@@ -423,14 +470,20 @@ function DepartmentGroup({
   selectedDate: Date;
 }) {
   const stats = useMemo(() => {
-    let present = 0, absent = 0, late = 0;
+    let present = 0, absent = 0, late = 0, totalLateMinutes = 0;
     attendanceData.forEach(({ employee, shift }) => {
       const status = getAttendanceStatus(shift, employee, selectedDate).status;
+      const lateMinutes = getTotalLateMinutes(shift);
+      totalLateMinutes += lateMinutes;
+
       if (status === "present" || status === "completed" || status === "break") present++;
-      else if (status === "late") late++;
+      else if (status === "late" || status === "completed_late") {
+        late++;
+        present++; // They were present, just late
+      }
       else absent++;
     });
-    return { present, absent, late, total: attendanceData.length };
+    return { present, absent, late, total: attendanceData.length, totalLateMinutes };
   }, [attendanceData, selectedDate]);
 
   return (
@@ -443,7 +496,7 @@ function DepartmentGroup({
             {department}
           </span>
         </div>
-        
+
         <div className="flex items-center gap-1">
           {stats.present > 0 && (
             <Badge className="text-[10px] px-1.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
@@ -460,8 +513,13 @@ function DepartmentGroup({
               {stats.absent} absent
             </Badge>
           )}
+          {stats.totalLateMinutes > 0 && (
+            <Badge className="text-[10px] px-1.5 bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400">
+              {formatLateMinutes(stats.totalLateMinutes)} late total
+            </Badge>
+          )}
         </div>
-        
+
         <div className="flex-1 h-px bg-slate-200 dark:bg-slate-800" />
       </div>
 
@@ -474,6 +532,7 @@ function DepartmentGroup({
               <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</TableHead>
               <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Clock In</TableHead>
               <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Clock Out</TableHead>
+              <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Late</TableHead>
               <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Hours</TableHead>
               <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Breaks</TableHead>
             </TableRow>
@@ -538,14 +597,14 @@ function useAttendanceData(selectedDate: Date) {
         throw new Error("Failed to fetch shifts");
       }
       const data = await res.json();
-      
+
       // Handle both array and object response formats
       if (Array.isArray(data)) {
         return data;
       } else if (data.shifts && Array.isArray(data.shifts)) {
         return data.shifts;
       }
-      
+
       console.warn("Unexpected shifts response format:", data);
       return [];
     },
@@ -575,7 +634,7 @@ function useAttendanceData(selectedDate: Date) {
   // Map shifts by userId with date validation
   const shiftsByUserId = useMemo(() => {
     const map = new Map<string, ShiftWithUser>();
-    
+
     shifts.forEach(shift => {
       // Validate that this shift is for the selected date
       if (isShiftForDate(shift, selectedDate)) {
@@ -586,7 +645,7 @@ function useAttendanceData(selectedDate: Date) {
         }
       }
     });
-    
+
     return map;
   }, [shifts, selectedDate]);
 
@@ -607,18 +666,22 @@ function useAttendanceData(selectedDate: Date) {
     return Array.from(depts).sort();
   }, [employees]);
 
-  // Calculate stats
+  // Calculate stats including total late minutes
   const stats = useMemo((): AttendanceStats => {
-    let present = 0, late = 0, absent = 0, onBreak = 0;
-    
+    let present = 0, late = 0, absent = 0, onBreak = 0, totalLateMinutes = 0;
+
     attendanceData.forEach(({ employee, shift }) => {
       const status = getAttendanceStatus(shift, employee, selectedDate).status;
+      const lateMinutes = getTotalLateMinutes(shift);
+      totalLateMinutes += lateMinutes;
+
       switch (status) {
         case "present":
         case "completed":
           present++;
           break;
         case "late":
+        case "completed_late":
           late++;
           break;
         case "break":
@@ -628,13 +691,14 @@ function useAttendanceData(selectedDate: Date) {
           absent++;
       }
     });
-    
+
     return { 
       total: employees.length, 
       present, 
       late, 
       absent, 
-      onBreak 
+      onBreak,
+      totalLateMinutes
     };
   }, [attendanceData, employees.length, selectedDate]);
 
@@ -659,7 +723,7 @@ export default function AttendancePage() {
   const [groupByDepartment, setGroupByDepartment] = useState(true);
 
   const { toast } = useToast();
-  
+
   const {
     attendanceData,
     departments,
@@ -677,9 +741,8 @@ export default function AttendancePage() {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter(({ employee }) => {
         const fullName = `${employee.firstName || ""} ${employee.lastName || ""}`.toLowerCase();
-        const empId = employee.employeeId?.toLowerCase() || "";
         const email = employee.email?.toLowerCase() || "";
-        return fullName.includes(query) || empId.includes(query) || email.includes(query);
+        return fullName.includes(query) || email.includes(query);
       });
     }
 
@@ -698,7 +761,7 @@ export default function AttendancePage() {
           case "present":
             return status === "present" || status === "completed";
           case "late":
-            return status === "late";
+            return status === "late" || status === "completed_late";
           case "absent":
             return status === "absent";
           case "break":
@@ -724,14 +787,14 @@ export default function AttendancePage() {
     if (!groupByDepartment) {
       return { "All Employees": filteredData };
     }
-    
+
     const groups: Record<string, AttendanceRecord[]> = {};
     filteredData.forEach(item => {
       const dept = item.employee.department || "Unassigned";
       if (!groups[dept]) groups[dept] = [];
       groups[dept].push(item);
     });
-    
+
     return groups;
   }, [filteredData, groupByDepartment]);
 
@@ -749,7 +812,7 @@ export default function AttendancePage() {
   };
 
   const goToToday = () => setSelectedDate(new Date());
-  
+
   const isTodaySelected = format(selectedDate, "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd");
 
   const clearFilters = () => {
@@ -777,22 +840,34 @@ export default function AttendancePage() {
   };
 
   const handleExport = () => {
-    // Generate CSV
-    const headers = ["Employee", "Department", "Status", "Clock In", "Clock Out", "Hours", "Breaks"];
+    // Generate CSV with Late Minutes column
+    const headers = ["Employee", "Department", "Status", "Clock In", "Clock Out", "Late (mins)", "Morning Late", "Evening Late", "Hours", "Breaks"];
     const rows = filteredData.map(({ employee, shift }) => {
       const status = getAttendanceStatus(shift, employee, selectedDate);
       const clockIn = shift?.morningClockIn || shift?.eveningClockIn;
       const clockOut = shift?.morningClockOut || shift?.eveningClockOut;
+      const totalLate = getTotalLateMinutes(shift);
+      const morningLate = shift?.morningLateMinutes || 0;
+      const eveningLate = shift?.eveningLateMinutes || 0;
+
       return [
         `${employee.firstName} ${employee.lastName}`,
         employee.department || "Unassigned",
         status.label,
         formatTime(clockIn),
         formatTime(clockOut),
+        totalLate,
+        morningLate,
+        eveningLate,
         calculateDuration(clockIn, clockOut, shift?.breaks),
         shift?.breaks?.length || 0,
       ];
     });
+
+    // Add summary row
+    const totalLateMinutesSum = filteredData.reduce((sum, { shift }) => sum + getTotalLateMinutes(shift), 0);
+    rows.push([]);
+    rows.push(["TOTAL LATE MINUTES", "", "", "", "", totalLateMinutesSum, "", "", "", ""]);
 
     const csvContent = [headers, ...rows]
       .map(row => row.map(cell => `"${cell}"`).join(","))
@@ -834,7 +909,7 @@ export default function AttendancePage() {
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToPreviousDay}>
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          
+
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="outline" className="h-8 gap-2 text-xs font-medium">
@@ -851,7 +926,7 @@ export default function AttendancePage() {
               />
             </PopoverContent>
           </Popover>
-          
+
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToNextDay}>
             <ChevronRight className="h-4 w-4" />
           </Button>
@@ -866,7 +941,7 @@ export default function AttendancePage() {
         <div className="h-5 w-px bg-slate-200 dark:bg-slate-700" />
 
         {/* Stats Pills */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           <StatPill 
             icon={Users} 
             value={stats.total} 
@@ -907,6 +982,14 @@ export default function AttendancePage() {
             active={statusFilter === "break"}
             onClick={() => setStatusFilter("break")}
           />
+          {/* Total Late Minutes Pill */}
+          {stats.totalLateMinutes > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400">
+              <Clock className="h-3.5 w-3.5" />
+              <span className="font-bold">{formatLateMinutes(stats.totalLateMinutes)}</span>
+              <span className="hidden sm:inline opacity-70">Late Total</span>
+            </div>
+          )}
         </div>
 
         <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 hidden md:block" />
@@ -1048,6 +1131,7 @@ export default function AttendancePage() {
                   <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</TableHead>
                   <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Clock In</TableHead>
                   <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Clock Out</TableHead>
+                  <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Late</TableHead>
                   <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Hours</TableHead>
                   <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Breaks</TableHead>
                 </TableRow>
