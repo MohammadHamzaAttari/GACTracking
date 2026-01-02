@@ -840,58 +840,79 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       res.status(500).json({ error: "Failed to check day status" });
     }
   });
-  
-  // Start morning shift (clock in) - Enhanced with proper date handling
+
+  // Start morning shift (clock in) - FIXED LATE CALCULATION
   app.post("/api/employee/shift/morning/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
-      
+
       // Get effective working date
       const { workingDate, isNewDay } = await getEffectiveWorkingDate(userId);
-      
+
       // Clean up stale records first
       await cleanupStaleRecords(userId, workingDate);
-      
+
       // Get existing shift for working date
       let shift = await storage.getShiftByUserAndDate(userId, workingDate);
-      
+
       // Check if morning shift already started for this working date
-      if (shift?.morningClockIn && isFromDate(shift.morningClockIn, workingDate)) {
+      if (shift?.morningClockIn) {
         if (!shift.morningClockOut) {
           return res.status(400).json({ error: "Morning shift already active" });
         }
         return res.status(400).json({ error: "Morning shift already completed for today" });
       }
-      
+
       // Check if user is on break
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
         return res.status(400).json({ error: "Please end your break first" });
       }
-      
-      // Calculate late minutes
+
+      // Get user to check their configured shift start time
       const user = await storage.getUser(userId);
       let lateMinutes = 0;
-      
+
       if (user?.shiftStartTime) {
+        // Parse the configured shift start time (format: "HH:MM" or "HH:MM:SS")
         const [hours, minutes] = user.shiftStartTime.split(":").map(Number);
-        const shiftStart = new Date();
+
+        // Create shift start time for TODAY (not the workingDate necessarily)
+        const shiftStart = new Date(now);
         shiftStart.setHours(hours, minutes, 0, 0);
-        
+
+        // Only count as late if clocked in AFTER the shift start time
         if (now > shiftStart) {
           lateMinutes = Math.floor((now.getTime() - shiftStart.getTime()) / 60000);
+
+          // Cap late minutes at reasonable maximum (4 hours = 240 minutes)
+          // This prevents absurd values if there's a timezone/date issue
+          if (lateMinutes > 240) {
+            console.warn(`Capping late minutes from ${lateMinutes} to 240 for user ${userId}`);
+            lateMinutes = 240;
+          }
         }
       } else {
-        // Default morning start time
-        const defaultStart = new Date();
-        defaultStart.setHours(SHIFT_CONFIG.MORNING_START_HOUR, 0, 0, 0);
-        
+        // Fallback: Use default morning start time (8 AM)
+        const defaultStart = new Date(now);
+        defaultStart.setHours(8, 0, 0, 0);
+
         if (now > defaultStart) {
           lateMinutes = Math.floor((now.getTime() - defaultStart.getTime()) / 60000);
+
+          // Cap late minutes
+          if (lateMinutes > 240) {
+            lateMinutes = 240;
+          }
         }
       }
-      
+
+      // Ensure late minutes is never negative
+      lateMinutes = Math.max(0, lateMinutes);
+
+      console.log(`User ${userId} clocking in. Shift start: ${user?.shiftStartTime || '08:00'}, Now: ${format(now, 'HH:mm')}, Late: ${lateMinutes}m`);
+
       if (shift) {
         // Update existing shift record
         shift = await storage.updateShift(shift.id, {
@@ -910,15 +931,15 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           status: lateMinutes > 0 ? "late" : "present",
         });
       }
-      
+
       await storage.createActivityLog({
         userId,
         action: "morning_clock_in",
         details: lateMinutes > 0 ? `Late by ${lateMinutes} minutes` : "On time",
         timestamp: now,
       });
-      
-      // Send WhatsApp notification (user already fetched above)
+
+      // Send WhatsApp notification
       if (user) {
         getWasenderSettings().then(settings => 
           notifyShiftStart({
@@ -927,12 +948,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           }, settings)
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
-      
+
       res.json({ 
         ...shift, 
         workingDate, 
         isNewDay,
-        message: `Morning shift started for ${workingDate}`
+        message: `Morning shift started for ${workingDate}${lateMinutes > 0 ? ` (${lateMinutes}m late)` : ''}`
       });
     } catch (error) {
       console.error("Failed to start morning shift:", error);
@@ -1037,44 +1058,76 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       res.status(500).json({ error: "Failed to end morning shift" });
     }
   });
-  
-  // Start evening shift
+ 
+  // Start evening shift - FIXED LATE CALCULATION
   app.post("/api/employee/shift/evening/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
-      
+
       // Get effective working date
       const { workingDate, isNewDay } = await getEffectiveWorkingDate(userId);
-      
+
       // Clean up stale records first
       await cleanupStaleRecords(userId, workingDate);
-      
+
       let shift = await storage.getShiftByUserAndDate(userId, workingDate);
-      
+
       // Check if evening shift already started/active for this working date
-      if (shift?.eveningClockIn && isFromDate(shift.eveningClockIn, workingDate)) {
+      if (shift?.eveningClockIn) {
         if (!shift.eveningClockOut) {
           return res.status(400).json({ error: "Evening shift already active" });
         }
         return res.status(400).json({ error: "Evening shift already completed for today" });
       }
-      
+
       // Check if user is on break
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
         return res.status(400).json({ error: "Please end your break first" });
       }
-      
-      // Calculate late minutes for evening shift
+
+      // Get user to check their configured shift times
+      const user = await storage.getUser(userId);
       let lateMinutes = 0;
-      const eveningStart = new Date();
-      eveningStart.setHours(SHIFT_CONFIG.EVENING_START_HOUR, 0, 0, 0);
-      
+
+      // For evening shift, we need to determine the expected start time
+      // Option 1: Use shiftEndTime of morning shift as evening start (for two_shifts)
+      // Option 2: Use a fixed evening start time (e.g., 2 PM)
+      // Option 3: Use user's configured evening shift start if available
+
+      // Default evening start time is 2 PM (14:00)
+      let eveningStartHour = 14;
+      let eveningStartMinute = 0;
+
+      // If user has shiftType = 'two_shifts', use the gap between shifts
+      // For now, we'll use a default of 2 PM
+      if (user?.shiftType === 'two_shifts' && user?.shiftEndTime) {
+        // Evening shift starts after morning shift ends
+        // Use shiftEndTime as the evening start
+        const [hours, minutes] = user.shiftEndTime.split(":").map(Number);
+        eveningStartHour = hours;
+        eveningStartMinute = minutes;
+      }
+
+      const eveningStart = new Date(now);
+      eveningStart.setHours(eveningStartHour, eveningStartMinute, 0, 0);
+
       if (now > eveningStart) {
         lateMinutes = Math.floor((now.getTime() - eveningStart.getTime()) / 60000);
+
+        // Cap late minutes at reasonable maximum (4 hours = 240 minutes)
+        if (lateMinutes > 240) {
+          console.warn(`Capping evening late minutes from ${lateMinutes} to 240 for user ${userId}`);
+          lateMinutes = 240;
+        }
       }
-      
+
+      // Ensure late minutes is never negative
+      lateMinutes = Math.max(0, lateMinutes);
+
+      console.log(`User ${userId} evening clock in. Expected: ${eveningStartHour}:${eveningStartMinute}, Now: ${format(now, 'HH:mm')}, Late: ${lateMinutes}m`);
+
       if (shift) {
         shift = await storage.updateShift(shift.id, {
           eveningClockIn: now,
@@ -1091,16 +1144,15 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           status: lateMinutes > 0 ? "late" : "present",
         });
       }
-      
+
       await storage.createActivityLog({
         userId,
         action: "evening_clock_in",
-        details: lateMinutes > 0 ? `Late by ${lateMinutes} minutes` : "Evening shift started",
+        details: lateMinutes > 0 ? `Evening shift - Late by ${lateMinutes} minutes` : "Evening shift started on time",
         timestamp: now,
       });
-      
+
       // Send WhatsApp notification
-      const user = await storage.getUser(userId);
       if (user) {
         getWasenderSettings().then(settings =>
           notifyShiftStart({
@@ -1109,12 +1161,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           }, settings)
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
-      
+
       res.json({
         ...shift,
         workingDate,
         isNewDay,
-        message: `Evening shift started for ${workingDate}`
+        message: `Evening shift started for ${workingDate}${lateMinutes > 0 ? ` (${lateMinutes}m late)` : ''}`
       });
     } catch (error) {
       console.error("Failed to start evening shift:", error);
