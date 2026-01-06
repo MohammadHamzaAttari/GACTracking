@@ -103,11 +103,13 @@ interface EmployeeTargetData {
   meetings: {
     total: number;
     verified: number;
+    rejected: number;
     items: TargetItem[];
   };
   orders: {
     total: number;
     verified: number;
+    rejected: number;
     items: TargetItem[];
   };
 }
@@ -292,9 +294,9 @@ function AdminEntryCard({
             : "bg-gradient-to-r from-emerald-400 via-emerald-500 to-teal-500"
         )} />
 
-        {/* Verified badge */}
-        {entry.verified && (
-          <div className="absolute top-3 right-3 z-10">
+        {/* Status badges */}
+        <div className="absolute top-3 right-3 z-10 flex gap-2">
+          {entry.verified && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <div className="p-1.5 rounded-full shadow-lg bg-gradient-to-br from-emerald-400 to-emerald-600 text-white">
@@ -305,8 +307,20 @@ function AdminEntryCard({
                 <p>Verified</p>
               </TooltipContent>
             </Tooltip>
-          </div>
-        )}
+          )}
+          {!!entry.isRejected && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="p-1.5 rounded-full shadow-lg bg-gradient-to-br from-rose-400 to-rose-600 text-white">
+                  <X className="w-3.5 h-3.5" />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="left">
+                <p>Rejected</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
 
         <div className="p-4 pt-5">
           {/* Header */}
@@ -345,7 +359,7 @@ function AdminEntryCard({
                     Open GHL Link
                   </DropdownMenuItem>
                 )}
-                {!entry.verified && (
+                {!entry.verified && !entry.isRejected && (
                   <>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={onVerify} className="text-emerald-600">
@@ -355,6 +369,15 @@ function AdminEntryCard({
                     <DropdownMenuItem onClick={onReject} className="text-rose-600">
                       <X className="w-4 h-4 mr-2" />
                       Reject Entry
+                    </DropdownMenuItem>
+                  </>
+                )}
+                {!!entry.isRejected && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={onVerify} className="text-emerald-600">
+                      <Check className="w-4 h-4 mr-2" />
+                      Verify Instead
                     </DropdownMenuItem>
                   </>
                 )}
@@ -398,7 +421,7 @@ function AdminEntryCard({
               </Badge>
             )}
 
-            {!entry.verified && (
+            {!entry.verified && !entry.isRejected && (
               <Badge
                 variant="outline"
                 className="text-xs font-medium border-orange-200 text-orange-600 bg-orange-50 dark:border-orange-800 dark:text-orange-400 dark:bg-orange-950/50"
@@ -407,10 +430,20 @@ function AdminEntryCard({
                 Pending Review
               </Badge>
             )}
+
+            {!!entry.isRejected && (
+              <Badge
+                variant="outline"
+                className="text-xs font-medium border-rose-200 text-rose-600 bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:bg-rose-950/50"
+              >
+                <X className="w-3 h-3 mr-1" />
+                Rejected
+              </Badge>
+            )}
           </div>
 
-          {/* Actions for unverified */}
-          {!entry.verified && (
+          {/* Actions for unverified/pending */}
+          {!entry.verified && !entry.isRejected && (
             <div className="flex items-center gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
               <Button
                 size="sm"
@@ -435,6 +468,22 @@ function AdminEntryCard({
               >
                 <X className="w-4 h-4 mr-2" />
                 Reject
+              </Button>
+            </div>
+          )}
+
+          {/* Action for rejected to recover */}
+          {!!entry.isRejected && (
+            <div className="flex items-center gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 text-emerald-600 border-emerald-200 hover:bg-emerald-50 hover:border-emerald-300 dark:border-emerald-800 dark:hover:bg-emerald-950/50"
+                onClick={onVerify}
+                disabled={isVerifying}
+              >
+                <Check className="w-4 h-4 mr-2" />
+                Verify Instead
               </Button>
             </div>
           )}
@@ -501,8 +550,8 @@ function AdminEntryCard({
               </div>
               <div>
                 <p className="text-xs text-slate-500 mb-1">Status</p>
-                <Badge className={entry.verified ? "bg-emerald-500" : "bg-amber-500"}>
-                  {entry.verified ? "Verified" : "Pending"}
+                <Badge className={entry.verified ? "bg-emerald-500" : !!entry.isRejected ? "bg-rose-500" : "bg-amber-500"}>
+                  {entry.verified ? "Verified" : !!entry.isRejected ? "Rejected" : "Pending"}
                 </Badge>
               </div>
             </div>
@@ -564,7 +613,8 @@ function EmployeeSection({
     return meetings.items.filter((item) => {
       if (filters.type !== "all" && filters.type !== "meeting") return false;
       if (filters.status === "verified" && !item.verified) return false;
-      if (filters.status === "pending" && item.verified) return false;
+      if (filters.status === "pending" && (item.verified || !!item.isRejected)) return false;
+      if (filters.status === "rejected" && !item.isRejected) return false;
       if (filters.source !== "all" && item.source !== filters.source) return false;
       if (filters.clientType !== "all" && (item as any).clientType !== filters.clientType) return false;
       if (filters.dateFrom && item.date && new Date(item.date) < filters.dateFrom) return false;
@@ -577,7 +627,8 @@ function EmployeeSection({
     return orders.items.filter((item) => {
       if (filters.type !== "all" && filters.type !== "order") return false;
       if (filters.status === "verified" && !item.verified) return false;
-      if (filters.status === "pending" && item.verified) return false;
+      if (filters.status === "pending" && (item.verified || !!item.isRejected)) return false;
+      if (filters.status === "rejected" && !item.isRejected) return false;
       if (filters.source !== "all" && item.source !== filters.source) return false;
       if (filters.clientType !== "all" && (item as any).clientType !== filters.clientType) return false;
       if (filters.dateFrom && item.date && new Date(item.date) < filters.dateFrom) return false;
@@ -588,10 +639,6 @@ function EmployeeSection({
 
   const totalFilteredItems = filteredMeetings.length + filteredOrders.length;
   const pendingCount = [...filteredMeetings, ...filteredOrders].filter(i => !i.verified).length;
-
-  if (totalFilteredItems === 0 && (filters.type !== "all" || filters.status !== "all" || filters.source !== "all" || filters.clientType !== "all" || filters.dateFrom || filters.dateTo)) {
-    return null;
-  }
 
   const employeeName = `${employee.firstName} ${employee.lastName}`;
 
@@ -727,7 +774,7 @@ export default function AdminTargetBoard() {
   const [dateTo, setDateTo] = useState<Date | null>(null);
   const [expandedEmployees, setExpandedEmployees] = useState<Set<string>>(new Set());
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<"all" | "pending" | "verified">("all");
+  const [activeView, setActiveView] = useState<"all" | "pending" | "verified" | "rejected">("all");
 
   // Generate month options (last 12 months)
   const monthOptions = useMemo(() => {
@@ -779,7 +826,7 @@ export default function AdminTargetBoard() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/targets/summary"] });
-      toast({ title: "Success", description: "Entry rejected and removed" });
+      toast({ title: "Success", description: "Entry marked as rejected" });
     },
     onError: (error: any) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -793,7 +840,7 @@ export default function AdminTargetBoard() {
   };
 
   const handleReject = async (itemId: string) => {
-    if (window.confirm("Are you sure you want to reject and delete this entry?")) {
+    if (window.confirm("Are you sure you want to reject this entry? It will be moved to the Rejected section and excluded from performance totals.")) {
       setVerifyingId(itemId);
       await rejectMutation.mutateAsync(itemId);
       setVerifyingId(null);
@@ -841,12 +888,13 @@ export default function AdminTargetBoard() {
       ...data.totals,
       pendingMeetings: data.totals.totalMeetings - data.totals.verifiedMeetings,
       pendingOrders: data.totals.totalOrders - data.totals.verifiedOrders,
+      rejectedTotal: (data.totals as any).rejectedMeetings + (data.totals as any).rejectedOrders,
     };
   }, [data]);
 
   const filters = {
     type: typeFilter,
-    status: activeView === "pending" ? "pending" : activeView === "verified" ? "verified" : statusFilter,
+    status: activeView === "pending" ? "pending" : activeView === "verified" ? "verified" : activeView === "rejected" ? "rejected" : statusFilter,
     source: sourceFilter,
     clientType: clientTypeFilter,
     dateFrom,
@@ -962,18 +1010,18 @@ export default function AdminTargetBoard() {
               active={activeView === "verified"}
             />
             <StatCard
-              icon={Clock}
-              label="Pending Review"
-              value={stats.pendingMeetings + stats.pendingOrders}
-              color="amber"
-              onClick={() => setActiveView("pending")}
-              active={activeView === "pending"}
+              icon={X}
+              label="Rejected"
+              value={stats.rejectedTotal || 0}
+              color="rose"
+              onClick={() => setActiveView("rejected")}
+              active={activeView === "rejected"}
             />
             <StatCard
               icon={BarChart3}
               label="Verification Rate"
-              value={`${stats.totalMeetings + stats.totalOrders > 0 
-                ? Math.round(((stats.verifiedMeetings + stats.verifiedOrders) / (stats.totalMeetings + stats.totalOrders)) * 100) 
+              value={`${stats.totalMeetings + stats.totalOrders > 0
+                ? Math.round(((stats.verifiedMeetings + stats.verifiedOrders) / (stats.totalMeetings + stats.totalOrders)) * 100)
                 : 0}%`}
               color="purple"
             />
@@ -1016,6 +1064,7 @@ export default function AdminTargetBoard() {
               <SelectItem value="all">All Status</SelectItem>
               <SelectItem value="verified">Verified</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
             </SelectContent>
           </Select>
 
@@ -1150,7 +1199,7 @@ export default function AdminTargetBoard() {
       <div className="shrink-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-6 py-2">
         <div className="flex items-center justify-between text-xs text-slate-500">
           <span>
-            {filteredEmployees.length} employees • {stats.totalMeetings + stats.totalOrders} total entries
+            {filteredEmployees.length} employees • {stats.totalMeetings + stats.totalOrders} active • {stats.rejectedTotal} rejected
           </span>
           <span>Auto-refreshes every minute</span>
         </div>

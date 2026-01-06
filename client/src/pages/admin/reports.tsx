@@ -125,12 +125,12 @@ export default function ReportsPage() {
                       <div
                         className="h-full bg-primary/80 rounded-md"
                         style={{
-                          width: `${reports?.weeklyTrend?.[i] || Math.random() * 100}%`,
+                          width: `${reports?.weeklyTrend?.[i] || 0}%`,
                         }}
                       />
                     </div>
                     <span className="text-sm font-medium w-10 text-right">
-                      {reports?.weeklyTrend?.[i] || Math.floor(Math.random() * 100)}%
+                      {reports?.weeklyTrend?.[i] || 0}%
                     </span>
                   </div>
                 ))}
@@ -167,8 +167,8 @@ export default function ReportsPage() {
                         dept.rate >= 90
                           ? "bg-green-500/10 text-green-600 dark:text-green-400"
                           : dept.rate >= 75
-                          ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
-                          : "bg-red-500/10 text-red-600 dark:text-red-400"
+                            ? "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+                            : "bg-red-500/10 text-red-600 dark:text-red-400"
                       }
                     >
                       {dept.rate}%

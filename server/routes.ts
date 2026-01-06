@@ -44,7 +44,67 @@ const SHIFT_CONFIG = {
   DAY_RESET_BUFFER_HOURS: 3,           // Hours after last shift to reset for new day
   DEFAULT_STALE_SHIFT_MAX_HOURS: 12,   // Max hours before auto-closing open shifts
 };
+// ============= CLICKUP API CONFIGURATION =============
+const CLICKUP_CONFIG = {
+  API_KEY: process.env.CLICKUP_API_KEY || "pk_3677597_Y9QGK34UCENA4JYMT1MR8RJVCJN0MDMC",
+  TEAM_ID: process.env.CLICKUP_TEAM_ID || "9009178151",
+  SPACE_ID: process.env.CLICKUP_SPACE_ID || "90090394573",
+  BASE_URL: "https://api.clickup.com/api/v2",
+  CACHE_DURATION: 5 * 60 * 1000, // 5 minutes
+};
 
+// ClickUp cache
+let clickUpMembersCache: any = null;
+let clickUpMembersCacheTime: number = 0;
+
+// Helper: Fetch from ClickUp API
+async function clickUpFetch(endpoint: string, options: RequestInit = {}): Promise<any> {
+  const response = await fetch(`${CLICKUP_CONFIG.BASE_URL}${endpoint}`, {
+    ...options,
+    headers: {
+      "Authorization": CLICKUP_CONFIG.API_KEY,
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`ClickUp API Error: ${response.status} - ${errorText}`);
+    throw new Error(`ClickUp API Error: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+// Helper: Get ClickUp team members (cached)
+async function getClickUpMembers(): Promise<any> {
+  const now = Date.now();
+
+  if (clickUpMembersCache && (now - clickUpMembersCacheTime) < CLICKUP_CONFIG.CACHE_DURATION) {
+    return clickUpMembersCache;
+  }
+
+  const data = await clickUpFetch(`/team/${CLICKUP_CONFIG.TEAM_ID}`);
+  clickUpMembersCache = data;
+  clickUpMembersCacheTime = now;
+
+  return data;
+}
+
+// Helper: Find ClickUp user by email
+async function findClickUpUserByEmail(email: string): Promise<any | null> {
+  try {
+    const teamData = await getClickUpMembers();
+    const member = teamData.team.members.find(
+      (m: any) => m.user.email.toLowerCase() === email.toLowerCase()
+    );
+    return member?.user || null;
+  } catch (error) {
+    console.error("Error finding ClickUp user:", error);
+    return null;
+  }
+}
 // ============= GRACE PERIOD CONFIGURATION =============
 const GRACE_PERIOD_MINUTES = 15; // 15-minute grace period before counting as late
 
@@ -544,6 +604,12 @@ async function cleanupStaleRecords(userId: string, currentWorkingDate: string): 
   return { staleBreaksEnded, staleShiftsMarked };
 }
 
+import connectPg from "connect-pg-simple";
+import { pool } from "./db";
+
+const PostgreSqlStore = connectPg(session);
+
+// ============= REGISTER ROUTES =============
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -556,13 +622,19 @@ export async function registerRoutes(
   // Session middleware
   app.use(
     session({
+      store: new PostgreSqlStore({
+        pool,
+        tableName: "session",
+        createTableIfMissing: true,
+      }),
       secret: process.env.SESSION_SECRET || "gac-trackings-secret-key-2024",
       resave: false,
       saveUninitialized: false,
+      rolling: true, // Refresh session on every request
       cookie: {
         secure: process.env.NODE_ENV === "production",
         httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       },
     })
@@ -1848,11 +1920,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Cannot delete verified items" });
       }
 
-      await storage.deleteTargetItem(id);
+      await storage.updateTargetItem(id, {
+        isRejected: true,
+        verified: false,
+        verifiedAt: null,
+        verifiedBy: null
+      });
 
       await storage.createActivityLog({
         userId,
-        action: `target_${item.type}_deleted`,
+        action: `target_${item.type}_rejected`,
         details: `Deleted ${item.type}: ${item.name}`,
         timestamp: new Date(),
       });
@@ -1939,13 +2016,15 @@ export async function registerRoutes(
       res.json({
         target: target || { meetingTarget: 20, orderTarget: 5 }, // Default targets
         meetings: {
-          total: meetings.length,
+          total: meetings.filter(i => !i.isRejected).length,
           verified: meetings.filter(m => m.verified).length,
+          rejected: meetings.filter(m => !!m.isRejected).length,
           items: meetings,
         },
         orders: {
-          total: orders.length,
+          total: orders.filter(i => !i.isRejected).length,
           verified: orders.filter(o => o.verified).length,
+          rejected: orders.filter(o => !!o.isRejected).length,
           items: orders,
         },
       });
@@ -1989,11 +2068,14 @@ export async function registerRoutes(
       const { id } = req.params;
       const adminId = req.session.userId!;
 
+      console.log(`[DEBUG] Verifying item ID: ${id}`);
       const item = await storage.updateTargetItem(id, {
         verified: true,
         verifiedAt: new Date(),
         verifiedBy: adminId,
+        isRejected: false,
       });
+      console.log(`[DEBUG] Verification result:`, item ? "Success" : "Failed");
 
       if (!item) {
         return res.status(404).json({ error: "Target item not found" });
@@ -2028,16 +2110,37 @@ export async function registerRoutes(
     }
   });
 
-  // Admin: Delete target item
+  // Admin: Reject target item (previously delete)
   app.delete("/api/admin/targets/items/:id", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
+      const adminId = req.session.userId!;
+      console.log(`[DEBUG] Rejecting target item ID: ${id} by admin: ${adminId}`);
 
-      await storage.deleteTargetItem(id);
-      res.json({ success: true });
+      const item = await storage.getTargetItemById(id);
+      if (!item) {
+        return res.status(404).json({ error: "Item not found" });
+      }
+
+      const updatedItem = await storage.updateTargetItem(id, {
+        isRejected: true,
+        verified: false,
+        verifiedAt: null,
+        verifiedBy: null
+      });
+
+      await storage.createActivityLog({
+        userId: adminId,
+        action: `target_${item.type}_rejected`,
+        details: `Rejected ${item.type}: ${item.name}`,
+        timestamp: new Date(),
+      });
+
+      console.log(`[DEBUG] Rejection successful for item: ${id}`);
+      res.json({ success: true, message: "Entry rejected", item: updatedItem });
     } catch (error) {
-      console.error("Failed to delete target item:", error);
-      res.status(500).json({ error: "Failed to delete target item" });
+      console.error("Failed to reject target item:", error);
+      res.status(500).json({ error: "Failed to reject target item" });
     }
   });
 
@@ -2261,6 +2364,17 @@ export async function registerRoutes(
     }
   });
 
+  // Admin: Get general analytics for reports page
+  app.get("/api/admin/reports", requireAdmin, async (req, res) => {
+    try {
+      const data = await storage.getReportsData();
+      res.json(data);
+    } catch (error) {
+      console.error("Failed to fetch reports analytics:", error);
+      res.status(500).json({ error: "Failed to fetch reports analytics" });
+    }
+  });
+
   // Admin: Get all daily reports for a month
   app.get("/api/admin/reports/daily", requireAdmin, async (req, res) => {
     try {
@@ -2381,6 +2495,14 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Request not found" });
       }
 
+      // Add activity log for status change
+      await storage.createActivityLog({
+        userId: req.session.userId!,
+        action: "special_request_status_update",
+        details: `Updated special request status to ${status} for ${request.userId}`,
+        timestamp: new Date(),
+      });
+
       res.json(request);
     } catch (error) {
       console.error("Failed to update request:", error);
@@ -2420,6 +2542,14 @@ export async function registerRoutes(
         comment: comment.trim(),
         isAdminComment: isAdmin,
         statusChange: isAdmin && statusChange ? statusChange : null,
+      });
+
+      // Add activity log for comment
+      await storage.createActivityLog({
+        userId,
+        action: "special_request_comment",
+        details: `Added a comment to special request: ${request.title}`,
+        timestamp: new Date(),
       });
 
       // Update request status if admin changed it
@@ -2511,7 +2641,7 @@ export async function registerRoutes(
   app.get("/api/admin/targets/summary", requireAdmin, async (req, res) => {
     try {
       const month = req.query.month as string || new Date().toISOString().slice(0, 7);
-
+      console.log(`[DEBUG] Fetching admin targets summary for month: ${month}`);
       // Get all employees
       const allUsers = await storage.getAllUsers();
 
@@ -2538,13 +2668,15 @@ export async function registerRoutes(
             employee,
             target: target || { meetingTarget: 20, orderTarget: 5 },
             meetings: {
-              total: meetings.length,
+              total: meetings.filter((i: any) => !i.isRejected).length,
               verified: meetings.filter((m: any) => m.verified).length,
+              rejected: meetings.filter((m: any) => !!m.isRejected).length,
               items: meetings,
             },
             orders: {
-              total: orders.length,
+              total: orders.filter((i: any) => !i.isRejected).length,
               verified: orders.filter((o: any) => o.verified).length,
+              rejected: orders.filter((o: any) => !!o.isRejected).length,
               items: orders,
             },
           };
@@ -2555,15 +2687,336 @@ export async function registerRoutes(
       const totals = {
         totalMeetings: employeesData.reduce((sum, e) => sum + e.meetings.total, 0),
         verifiedMeetings: employeesData.reduce((sum, e) => sum + e.meetings.verified, 0),
+        rejectedMeetings: employeesData.reduce((sum, e) => sum + e.meetings.rejected, 0),
         totalOrders: employeesData.reduce((sum, e) => sum + e.orders.total, 0),
         verifiedOrders: employeesData.reduce((sum, e) => sum + e.orders.verified, 0),
+        rejectedOrders: employeesData.reduce((sum, e) => sum + e.orders.rejected, 0),
         totalEmployees: employeesData.length,
       };
 
+      console.log(`[DEBUG] Admin Summary Totals:`, totals);
       res.json({ employees: employeesData, totals });
     } catch (error) {
       console.error("Error fetching admin targets summary:", error);
       res.status(500).json({ error: "Failed to fetch targets summary" });
+    }
+  });
+  // ============= CLICKUP INTEGRATION ROUTES =============
+
+  // Get ClickUp team members (admin only - for debugging/mapping)
+  app.get("/api/clickup/team", requireAdmin, async (req, res) => {
+    try {
+      const data = await getClickUpMembers();
+      res.json(data);
+    } catch (error: any) {
+      console.error("ClickUp Team API Error:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch ClickUp team" });
+    }
+  });
+
+  // Get ClickUp user mapping by email (for debugging)
+  app.get("/api/clickup/user-by-email/:email", requireAuth, async (req, res) => {
+    try {
+      const { email } = req.params;
+      const clickUpUser = await findClickUpUserByEmail(email);
+
+      if (!clickUpUser) {
+        return res.status(404).json({
+          error: "User not found in ClickUp team",
+          email
+        });
+      }
+
+      res.json({
+        clickUpUserId: clickUpUser.id,
+        username: clickUpUser.username,
+        email: clickUpUser.email,
+        initials: clickUpUser.initials,
+        color: clickUpUser.color,
+      });
+    } catch (error: any) {
+      console.error("ClickUp User Lookup Error:", error);
+      res.status(500).json({ error: error.message || "Failed to find ClickUp user" });
+    }
+  });
+
+  // Get ClickUp tasks for a specific user ID
+  app.get("/api/clickup/tasks/:userId", requireAuth, async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const {
+        page = "0",
+        date_done_gt,
+        date_done_lt,
+        include_closed = "true",
+        statuses = "complete"
+      } = req.query;
+
+      // Build query string
+      const params = new URLSearchParams();
+      params.append("assignees[]", userId);
+      params.append("include_closed", include_closed as string);
+      params.append("page", page as string);
+      params.append("space_ids[]", CLICKUP_CONFIG.SPACE_ID);
+
+      // Handle multiple statuses
+      const statusList = (statuses as string).split(",");
+      statusList.forEach(status => {
+        params.append("statuses[]", status.trim());
+      });
+
+      // Date filters
+      if (date_done_gt) {
+        params.append("date_done_gt", date_done_gt as string);
+      }
+      if (date_done_lt) {
+        params.append("date_done_lt", date_done_lt as string);
+      }
+
+      const data = await clickUpFetch(`/team/${CLICKUP_CONFIG.TEAM_ID}/task?${params.toString()}`);
+      res.json(data);
+    } catch (error: any) {
+      console.error("ClickUp Tasks API Error:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch ClickUp tasks" });
+    }
+  });
+
+  // Get MY ClickUp tasks (auto-maps logged-in user's email to ClickUp)
+  app.get("/api/clickup/my-tasks", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+
+      // Get user from database
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(401).json({ error: "User not found" });
+      }
+
+      if (!user.email) {
+        return res.status(400).json({
+          error: "No email associated with your account",
+          tasks: []
+        });
+      }
+
+      // Find ClickUp user by email
+      const clickUpUser = await findClickUpUserByEmail(user.email);
+
+      if (!clickUpUser) {
+        return res.status(404).json({
+          error: "Your email is not linked to ClickUp",
+          email: user.email,
+          tasks: []
+        });
+      }
+
+      const clickUpUserId = clickUpUser.id;
+
+      // Parse query params
+      const {
+        page = "0",
+        date_done_gt,
+        date_done_lt,
+        statuses = "complete",
+        month // Format: "2025-01"
+      } = req.query;
+
+      // Build query string
+      const params = new URLSearchParams();
+      params.append("assignees[]", clickUpUserId.toString());
+      params.append("include_closed", "true");
+      params.append("page", page as string);
+      params.append("space_ids[]", CLICKUP_CONFIG.SPACE_ID);
+
+      // Handle statuses
+      const statusList = (statuses as string).split(",");
+      statusList.forEach(status => {
+        params.append("statuses[]", status.trim());
+      });
+
+      // Calculate date range from month if provided
+      if (month) {
+        const [year, monthNum] = (month as string).split("-").map(Number);
+        const startOfMonth = new Date(year, monthNum - 1, 1).getTime();
+        const endOfMonth = new Date(year, monthNum, 0, 23, 59, 59, 999).getTime();
+        params.append("date_done_gt", startOfMonth.toString());
+        params.append("date_done_lt", endOfMonth.toString());
+      } else {
+        if (date_done_gt) params.append("date_done_gt", date_done_gt as string);
+        if (date_done_lt) params.append("date_done_lt", date_done_lt as string);
+      }
+
+      console.log(`[ClickUp] Fetching tasks for user ${user.email} (ClickUp ID: ${clickUpUserId})`);
+      console.log(`[ClickUp] Query: ${params.toString()}`);
+
+      const data = await clickUpFetch(`/team/${CLICKUP_CONFIG.TEAM_ID}/task?${params.toString()}`);
+
+      console.log(`[ClickUp] Found ${data.tasks?.length || 0} tasks`);
+
+      res.json({
+        ...data,
+        clickUpUser: {
+          id: clickUpUser.id,
+          username: clickUpUser.username,
+          email: clickUpUser.email,
+        }
+      });
+    } catch (error: any) {
+      console.error("ClickUp My Tasks API Error:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch your ClickUp tasks" });
+    }
+  });
+
+  // Get ALL completed tasks for Development team (Admin view)
+  app.get("/api/admin/clickup/all-tasks", requireAdmin, async (req, res) => {
+    try {
+      const { month } = req.query;
+
+      if (!month) {
+        return res.status(400).json({ error: "Month parameter required (format: YYYY-MM)" });
+      }
+
+      // Get all Development employees
+      const allUsers = await storage.getAllUsers();
+      const devEmployees = allUsers.filter(u =>
+        u.role === "employee" &&
+        u.status === "active" &&
+        u.department === "Development" &&
+        u.email
+      );
+
+      // Calculate date range
+      const [year, monthNum] = (month as string).split("-").map(Number);
+      const startOfMonth = new Date(year, monthNum - 1, 1).getTime();
+      const endOfMonth = new Date(year, monthNum, 0, 23, 59, 59, 999).getTime();
+
+      // Fetch tasks for each employee
+      const employeeTasksPromises = devEmployees.map(async (employee) => {
+        try {
+          const clickUpUser = await findClickUpUserByEmail(employee.email!);
+
+          if (!clickUpUser) {
+            return {
+              employee: {
+                id: employee.id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+              },
+              clickUpUser: null,
+              tasks: [],
+              error: "Not linked to ClickUp"
+            };
+          }
+
+          // Build query
+          const params = new URLSearchParams();
+          params.append("assignees[]", clickUpUser.id.toString());
+          params.append("include_closed", "true");
+          params.append("page", "0");
+          params.append("space_ids[]", CLICKUP_CONFIG.SPACE_ID);
+          params.append("statuses[]", "complete");
+          params.append("date_done_gt", startOfMonth.toString());
+          params.append("date_done_lt", endOfMonth.toString());
+
+          const data = await clickUpFetch(`/team/${CLICKUP_CONFIG.TEAM_ID}/task?${params.toString()}`);
+
+          return {
+            employee: {
+              id: employee.id,
+              firstName: employee.firstName,
+              lastName: employee.lastName,
+              email: employee.email,
+            },
+            clickUpUser: {
+              id: clickUpUser.id,
+              username: clickUpUser.username,
+              email: clickUpUser.email,
+            },
+            tasks: data.tasks || [],
+            taskCount: data.tasks?.length || 0,
+          };
+        } catch (error: any) {
+          console.error(`Error fetching tasks for ${employee.email}:`, error);
+          return {
+            employee: {
+              id: employee.id,
+              firstName: employee.firstName,
+              lastName: employee.lastName,
+              email: employee.email,
+            },
+            clickUpUser: null,
+            tasks: [],
+            error: error.message
+          };
+        }
+      });
+
+      const results = await Promise.all(employeeTasksPromises);
+
+      // Calculate totals
+      const totals = {
+        totalEmployees: results.length,
+        linkedEmployees: results.filter(r => r.clickUpUser).length,
+        totalTasks: results.reduce((sum, r) => sum + (r.tasks?.length || 0), 0),
+      };
+
+      res.json({
+        month,
+        employees: results,
+        totals,
+      });
+    } catch (error: any) {
+      console.error("ClickUp All Tasks API Error:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch all ClickUp tasks" });
+    }
+  });
+
+  // Refresh ClickUp cache (admin utility)
+  app.post("/api/admin/clickup/refresh-cache", requireAdmin, async (req, res) => {
+    try {
+      // Clear cache
+      clickUpMembersCache = null;
+      clickUpMembersCacheTime = 0;
+
+      // Fetch fresh data
+      const data = await getClickUpMembers();
+
+      res.json({
+        success: true,
+        message: "ClickUp cache refreshed",
+        memberCount: data.team.members.length
+      });
+    } catch (error: any) {
+      console.error("ClickUp Cache Refresh Error:", error);
+      res.status(500).json({ error: error.message || "Failed to refresh cache" });
+    }
+  });
+  // ============= NOTIFICATION ROUTES =============
+
+  // Get recent notifications for employee
+  app.get("/api/notifications", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const limit = parseInt(req.query.limit as string) || 20;
+
+      const activities = await storage.getActivityLogsByUser(userId);
+      res.json(activities.slice(0, limit));
+    } catch (error) {
+      console.error("Failed to fetch notifications:", error);
+      res.status(500).json({ error: "Failed to fetch notifications" });
+    }
+  });
+
+  // Get recent activities for admin
+  app.get("/api/admin/notifications", requireAdmin, async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const activities = await storage.getRecentActivityLogs(limit);
+      res.json(activities);
+    } catch (error) {
+      console.error("Failed to fetch admin notifications:", error);
+      res.status(500).json({ error: "Failed to fetch notifications" });
     }
   });
 

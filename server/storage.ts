@@ -1,6 +1,6 @@
 // server/storage.ts
-import { 
-  users, 
+import {
+  users,
   shifts,
   breaks,
   targets,
@@ -12,7 +12,7 @@ import {
   specialRequests,
   requestComments,
   monthlyArchive,
-  type User, 
+  type User,
   type InsertUser,
   type Shift,
   type InsertShift,
@@ -85,7 +85,7 @@ export interface IStorage {
   getShiftsByDate(date: string): Promise<ShiftWithUser[]>;
   deleteTargetItem(id: string): Promise<void>;
   getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]>;
-  
+
   // User methods
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
@@ -95,7 +95,7 @@ export interface IStorage {
   getAllUsers(): Promise<SafeUser[]>;
   getUsersByRole(role: string): Promise<SafeUser[]>;
   getUsersByDepartment(department: string): Promise<SafeUser[]>;
-  
+
   // Shift methods
   getShiftById(id: string): Promise<Shift | undefined>;
   getShiftByUserAndDate(userId: string, date: string): Promise<Shift | undefined>;
@@ -103,7 +103,7 @@ export interface IStorage {
   updateShift(id: string, data: Partial<InsertShift>): Promise<Shift | undefined>;
   getShiftsByUser(userId: string, limit?: number): Promise<Shift[]>;
   getTodayShifts(): Promise<(Shift & { user: SafeUser; breaks: Break[] })[]>;
-  
+
   // Break methods
   getBreakById(id: string): Promise<Break | undefined>;
   createBreak(breakRecord: InsertBreak): Promise<Break>;
@@ -120,30 +120,30 @@ export interface IStorage {
     totalDuration: number;
     byType: { type: string; count: number; duration: number }[];
   }>;
-  
+
   // Target methods
   getTargetById(id: string): Promise<Target | undefined>;
   getTargetByUserAndMonth(userId: string, month: string): Promise<Target | undefined>;
   createTarget(target: InsertTarget): Promise<Target>;
   updateTarget(id: string, data: Partial<InsertTarget>): Promise<Target | undefined>;
   getAllTargetsForMonth(month: string): Promise<(Target & { user: SafeUser })[]>;
-  
+
   // Target item methods
   getTargetItemById(id: string): Promise<TargetItem | undefined>;
   createTargetItem(item: InsertTargetItem): Promise<TargetItem>;
   updateTargetItem(id: string, data: Partial<InsertTargetItem>): Promise<TargetItem | undefined>;
   getTargetItemsByTarget(targetId: string): Promise<TargetItem[]>;
   getAllTargetItemsForMonth(month: string): Promise<(TargetItem & { user: SafeUser })[]>;
-  
+
   // Activity log methods
   createActivityLog(log: InsertActivityLog): Promise<ActivityLog>;
   getActivityLogsByUser(userId: string, date?: string): Promise<ActivityLog[]>;
   getRecentActivityLogs(limit?: number): Promise<(ActivityLog & { user: SafeUser })[]>;
-  
+
   // WASENDER config methods
   getWasenderConfig(): Promise<WasenderConfig | undefined>;
   updateWasenderConfig(data: Partial<InsertWasenderConfig>): Promise<WasenderConfig>;
-  
+
   // Department methods
   getDepartments(): Promise<Department[]>;
   updateDepartment(id: string, data: Partial<InsertDepartment>): Promise<Department | undefined>;
@@ -183,7 +183,7 @@ export interface IStorage {
   isMonthArchived(month: string): Promise<boolean>;
   getArchivedReports(month: string): Promise<DailyShiftReport[]>;
   getArchivedRequests(month: string): Promise<SpecialRequest[]>;
-  
+
   // Incomplete shifts
   getIncompleteShiftsBeforeDate(userId: string, beforeDate: string): Promise<Shift[]>;
   getOrCreateShiftForDate(userId: string, date: string): Promise<Shift>;
@@ -195,7 +195,7 @@ export interface IStorage {
     onBreak: number;
     notStarted: number;
   }>;
-  
+
   // Analytics methods
   getAttendanceAnalytics(startDate?: string, endDate?: string): Promise<{
     totalShifts: number;
@@ -204,12 +204,18 @@ export interface IStorage {
     breakStats: { type: string; count: number; avgDuration: number }[];
   }>;
   getDepartmentStats(): Promise<{ department: string; count: number; activeToday: number }[]>;
+  getReportsData(): Promise<{
+    monthlyAttendance: number;
+    averageWorkHours: number;
+    topDepartments: { name: string; rate: number }[];
+    weeklyTrend: number[];
+  }>;
 }
 
 // PostgreSQL Database Storage
 export class DatabaseStorage implements IStorage {
   // ============= USER METHODS =============
-  
+
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user || undefined;
@@ -262,34 +268,34 @@ export class DatabaseStorage implements IStorage {
   async updateUser(id: string, data: Partial<InsertUser>): Promise<User | undefined> {
     // Build update data object with all possible fields
     const updateData: any = {};
-    
+
     // List of all possible fields that can be updated
     const fields = [
       'username', 'password', 'firstName', 'lastName', 'email',
       'role', 'department', 'position', 'salary', 'status',
-      'shiftType', 
+      'shiftType',
       'shiftStartTime', 'shiftEndTime',
-      'morningShiftStart', 'morningShiftEnd', 
+      'morningShiftStart', 'morningShiftEnd',
       'eveningShiftStart', 'eveningShiftEnd',
       'phone', 'whatsappPreference', 'address', 'emergencyContact', 'isActive'
     ];
-    
+
     for (const field of fields) {
       if ((data as any)[field] !== undefined) {
         updateData[field] = (data as any)[field];
       }
     }
-    
+
     console.log("Storage.updateUser - Updating user", id, "with data:", JSON.stringify({
       ...updateData,
       password: updateData.password ? '[HIDDEN]' : undefined
     }, null, 2));
-    
+
     if (Object.keys(updateData).length === 0) {
       console.log("Storage.updateUser - No fields to update, returning existing user");
       return this.getUser(id);
     }
-    
+
     const [user] = await db.update(users).set(updateData).where(eq(users.id, id)).returning();
     return user || undefined;
   }
@@ -454,13 +460,13 @@ export class DatabaseStorage implements IStorage {
         .leftJoin(users, eq(shifts.userId, users.id))
         .where(eq(shifts.date, date))
         .orderBy(desc(shifts.createdAt));
-      
+
       // Fetch breaks for all shifts
       const shiftIds = shiftRecords.map(r => r.id);
-      const allBreaks = shiftIds.length > 0 
+      const allBreaks = shiftIds.length > 0
         ? await db.select().from(breaks).where(inArray(breaks.shiftId, shiftIds))
         : [];
-      
+
       // Merge breaks into shifts
       return shiftRecords.map(shift => ({
         ...shift,
@@ -552,19 +558,19 @@ export class DatabaseStorage implements IStorage {
       .from(shifts)
       .leftJoin(users, eq(shifts.userId, users.id))
       .where(eq(shifts.date, today));
-    
+
     // Fetch breaks for all shifts
     const shiftIds = records.map(r => r.id);
-    const allBreaks = shiftIds.length > 0 
+    const allBreaks = shiftIds.length > 0
       ? await db.select().from(breaks).where(inArray(breaks.shiftId, shiftIds))
       : [];
-    
+
     // Merge breaks into shifts
     const shiftsWithBreaks = records.map(shift => ({
       ...shift,
       breaks: allBreaks.filter(b => b.shiftId === shift.id),
     }));
-    
+
     return shiftsWithBreaks as (Shift & { user: SafeUser; breaks: Break[] })[];
   }
 
@@ -593,7 +599,7 @@ export class DatabaseStorage implements IStorage {
 
   async getOrCreateShiftForDate(userId: string, date: string): Promise<Shift> {
     let shift = await this.getShiftByUserAndDate(userId, date);
-    
+
     if (!shift) {
       shift = await this.createShift({
         userId,
@@ -601,7 +607,7 @@ export class DatabaseStorage implements IStorage {
         status: "not_started",
       });
     }
-    
+
     return shift;
   }
 
@@ -680,22 +686,22 @@ export class DatabaseStorage implements IStorage {
       eq(breaks.date, date),
       eq(breaks.type, type)
     ];
-    
+
     if (shiftPeriod) {
       conditions.push(eq(breaks.shiftPeriod, shiftPeriod));
     }
-    
+
     const [result] = await db
       .select({ count: sql<number>`count(*)` })
       .from(breaks)
       .where(and(...conditions));
-    
+
     return Number(result?.count || 0);
   }
 
   async endStaleBraaks(userId: string, currentDate: string): Promise<number> {
     const now = new Date();
-    
+
     // Find all breaks without end time that are not from today
     const staleBreaks = await db
       .select()
@@ -705,26 +711,26 @@ export class DatabaseStorage implements IStorage {
         isNull(breaks.endTime),
         lt(breaks.date, currentDate)
       ));
-    
+
     let endedCount = 0;
-    
+
     for (const brk of staleBreaks) {
       // End the break at midnight of that day
       const breakDate = new Date(brk.date);
       breakDate.setHours(23, 59, 59, 999);
-      
+
       const durationMinutes = Math.floor(
         (breakDate.getTime() - new Date(brk.startTime).getTime()) / 60000
       );
-      
+
       await db.update(breaks).set({
         endTime: breakDate,
         durationMinutes: Math.min(durationMinutes, 480), // Cap at 8 hours
       }).where(eq(breaks.id, brk.id));
-      
+
       endedCount++;
     }
-    
+
     return endedCount;
   }
 
@@ -741,15 +747,15 @@ export class DatabaseStorage implements IStorage {
         gte(breaks.date, startDate),
         lte(breaks.date, endDate)
       ));
-    
+
     const byType = [
       { type: "prayer", count: 0, duration: 0 },
       { type: "meal", count: 0, duration: 0 },
       { type: "urgent", count: 0, duration: 0 },
     ];
-    
+
     let totalDuration = 0;
-    
+
     for (const brk of allBreaks) {
       const stat = byType.find(s => s.type === brk.type);
       if (stat) {
@@ -758,7 +764,7 @@ export class DatabaseStorage implements IStorage {
       }
       totalDuration += brk.durationMinutes || 0;
     }
-    
+
     return {
       totalBreaks: allBreaks.length,
       totalDuration,
@@ -832,7 +838,7 @@ export class DatabaseStorage implements IStorage {
       .from(targets)
       .leftJoin(users, eq(targets.userId, users.id))
       .where(eq(targets.month, month));
-    
+
     return records as (Target & { user: SafeUser })[];
   }
 
@@ -864,9 +870,25 @@ export class DatabaseStorage implements IStorage {
   async getTargetItemsByUserAndMonth(userId: string, month: string): Promise<TargetItem[]> {
     const startDate = `${month}-01`;
     const endDate = `${month}-31`;
-    
+
     return await db
-      .select()
+      .select({
+        id: targetItems.id,
+        targetId: targetItems.targetId,
+        userId: targetItems.userId,
+        type: targetItems.type,
+        name: targetItems.name,
+        source: targetItems.source,
+        clientType: targetItems.clientType,
+        contactLink: targetItems.contactLink,
+        date: targetItems.date,
+        verified: targetItems.verified,
+        verifiedAt: targetItems.verifiedAt,
+        verifiedBy: targetItems.verifiedBy,
+        isRejected: sql<boolean>`COALESCE(${targetItems.isRejected}, false)`,
+        rejectionReason: targetItems.rejectionReason,
+        createdAt: targetItems.createdAt,
+      })
       .from(targetItems)
       .where(and(
         eq(targetItems.userId, userId),
@@ -879,7 +901,7 @@ export class DatabaseStorage implements IStorage {
   async getAllTargetItemsForMonth(month: string): Promise<(TargetItem & { user: SafeUser })[]> {
     const startDate = `${month}-01`;
     const endDate = `${month}-31`;
-    
+
     const records = await db
       .select({
         id: targetItems.id,
@@ -894,6 +916,8 @@ export class DatabaseStorage implements IStorage {
         verified: targetItems.verified,
         verifiedAt: targetItems.verifiedAt,
         verifiedBy: targetItems.verifiedBy,
+        isRejected: sql<boolean>`COALESCE(${targetItems.isRejected}, false)`,
+        rejectionReason: targetItems.rejectionReason,
         createdAt: targetItems.createdAt,
         user: {
           id: users.id,
@@ -931,7 +955,7 @@ export class DatabaseStorage implements IStorage {
         lte(targetItems.date, endDate)
       ))
       .orderBy(desc(targetItems.createdAt));
-    
+
     return records as (TargetItem & { user: SafeUser })[];
   }
 
@@ -1002,7 +1026,7 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(users, eq(activityLogs.userId, users.id))
       .orderBy(desc(activityLogs.timestamp))
       .limit(limit);
-    
+
     return logs as (ActivityLog & { user: SafeUser })[];
   }
 
@@ -1048,22 +1072,22 @@ export class DatabaseStorage implements IStorage {
     notStarted: number;
   }> {
     const today = new Date().toISOString().split("T")[0];
-    
+
     const allEmployees = await db
       .select()
       .from(users)
       .where(and(eq(users.role, "employee"), eq(users.status, "active")));
-    
+
     const totalEmployees = allEmployees.length;
-    
+
     const todayShifts = await db
       .select()
       .from(shifts)
       .where(eq(shifts.date, today));
-    
+
     let activeWorking = 0;
     let onBreak = 0;
-    
+
     for (const shift of todayShifts) {
       const activeBreak = await this.getActiveBreak(shift.userId);
       if (activeBreak) {
@@ -1072,9 +1096,9 @@ export class DatabaseStorage implements IStorage {
         activeWorking++;
       }
     }
-    
+
     const notStarted = totalEmployees - todayShifts.length;
-    
+
     return {
       totalEmployees,
       activeWorking,
@@ -1094,7 +1118,7 @@ export class DatabaseStorage implements IStorage {
     const today = new Date().toISOString().split("T")[0];
     const start = startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const end = endDate || today;
-    
+
     const allShifts = await db
       .select()
       .from(shifts)
@@ -1102,16 +1126,16 @@ export class DatabaseStorage implements IStorage {
         gte(shifts.date, start),
         lte(shifts.date, end)
       ));
-    
+
     const totalShifts = allShifts.length;
-    const onTimeShifts = allShifts.filter(s => 
+    const onTimeShifts = allShifts.filter(s =>
       (s.morningLateMinutes === 0 || s.morningLateMinutes === null) &&
       (s.eveningLateMinutes === 0 || s.eveningLateMinutes === null)
     ).length;
     const onTimeRate = totalShifts > 0 ? Math.round((onTimeShifts / totalShifts) * 100) : 0;
-    
+
     const avgWorkHours = 8;
-    
+
     const allBreaks = await db
       .select()
       .from(breaks)
@@ -1119,13 +1143,13 @@ export class DatabaseStorage implements IStorage {
         gte(breaks.date, start),
         lte(breaks.date, end)
       ));
-    
+
     const breakStats = [
       { type: "prayer", count: 0, totalDuration: 0 },
       { type: "meal", count: 0, totalDuration: 0 },
       { type: "urgent", count: 0, totalDuration: 0 },
     ];
-    
+
     for (const b of allBreaks) {
       const stat = breakStats.find(s => s.type === b.type);
       if (stat) {
@@ -1133,7 +1157,7 @@ export class DatabaseStorage implements IStorage {
         stat.totalDuration += b.durationMinutes || 0;
       }
     }
-    
+
     return {
       totalShifts,
       onTimeRate,
@@ -1148,37 +1172,126 @@ export class DatabaseStorage implements IStorage {
 
   async getDepartmentStats(): Promise<{ department: string; count: number; activeToday: number }[]> {
     const today = new Date().toISOString().split("T")[0];
-    
+
     const allEmployees = await db
       .select()
       .from(users)
       .where(and(eq(users.role, "employee"), eq(users.status, "active")));
-    
+
     const todayShifts = await db
       .select()
       .from(shifts)
       .where(eq(shifts.date, today));
-    
+
     const deptMap: { [key: string]: { count: number; activeToday: number } } = {};
-    
+
     for (const emp of allEmployees) {
       const dept = emp.department || "Unassigned";
       if (!deptMap[dept]) {
         deptMap[dept] = { count: 0, activeToday: 0 };
       }
       deptMap[dept].count++;
-      
+
       const hasShift = todayShifts.some(s => s.userId === emp.id);
       if (hasShift) {
         deptMap[dept].activeToday++;
       }
     }
-    
+
     return Object.entries(deptMap).map(([department, stats]) => ({
       department,
       count: stats.count,
       activeToday: stats.activeToday,
     }));
+  }
+
+  async getReportsData(): Promise<{
+    monthlyAttendance: number;
+    averageWorkHours: number;
+    topDepartments: { name: string; rate: number }[];
+    weeklyTrend: number[];
+  }> {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split("T")[0];
+
+    // 1. Monthly Attendance Rate
+    const monthlyShifts = await db
+      .select()
+      .from(shifts)
+      .where(and(gte(shifts.date, startOfMonth), lte(shifts.date, endOfMonth)));
+
+    const activeUsers = await db.select().from(users).where(eq(users.status, "active"));
+    const totalPossibleShifts = activeUsers.length * (now.getDate()); // Approximate for month-to-date
+
+    const presentShifts = monthlyShifts.filter(s => s.status === "present" || s.status === "late").length;
+    const monthlyAttendance = totalPossibleShifts > 0 ? Math.round((presentShifts / totalPossibleShifts) * 100) : 0;
+
+    // 2. Average Work Hours
+    let totalMinutes = 0;
+    let shiftsWithTime = 0;
+    for (const s of monthlyShifts) {
+      if (s.morningClockIn && s.morningClockOut) {
+        totalMinutes += (s.morningClockOut.getTime() - s.morningClockIn.getTime()) / 60000;
+        shiftsWithTime++;
+      }
+      if (s.eveningClockIn && s.eveningClockOut) {
+        totalMinutes += (s.eveningClockOut.getTime() - s.eveningClockIn.getTime()) / 60000;
+        shiftsWithTime++;
+      }
+    }
+    const averageWorkHours = shiftsWithTime > 0 ? Number((totalMinutes / shiftsWithTime / 60).toFixed(1)) : 8;
+
+    // 3. Department Performance
+    const deptStats: Record<string, { present: number; total: number }> = {};
+    activeUsers.forEach(u => {
+      const dept = u.department || "Other";
+      if (!deptStats[dept]) deptStats[dept] = { present: 0, total: 0 };
+    });
+
+    for (const s of monthlyShifts) {
+      const user = activeUsers.find(u => u.id === s.userId);
+      if (user) {
+        const dept = user.department || "Other";
+        if (deptStats[dept]) {
+          deptStats[dept].total++;
+          if (s.status === "present" || s.status === "late") {
+            deptStats[dept].present++;
+          }
+        }
+      }
+    }
+
+    const topDepartments = Object.entries(deptStats).map(([name, stats]) => ({
+      name,
+      rate: stats.total > 0 ? Math.round((stats.present / stats.total) * 100) : 0
+    })).sort((a, b) => b.rate - a.rate).slice(0, 5);
+
+    // 4. Weekly Trend (Monday to Sunday)
+    const currentDay = now.getDay(); // 0 is Sunday
+    const mondayOffset = (currentDay === 0 ? -6 : 1) - currentDay;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + mondayOffset);
+    monday.setHours(0, 0, 0, 0);
+
+    const weeklyTrend: number[] = [0, 0, 0, 0, 0, 0, 0];
+    for (let i = 0; i < 7; i++) {
+      const dayDate = new Date(monday);
+      dayDate.setDate(monday.getDate() + i);
+      const dayStr = dayDate.toISOString().split("T")[0];
+
+      const dayShifts = monthlyShifts.filter(s => s.date === dayStr);
+      const dayPresent = dayShifts.filter(s => s.status === "present" || s.status === "late").length;
+
+      weeklyTrend[i] = activeUsers.length > 0 ? Math.round((dayPresent / activeUsers.length) * 100) : 0;
+    }
+
+    return {
+      monthlyAttendance: Math.min(monthlyAttendance, 100),
+      averageWorkHours,
+      topDepartments,
+      weeklyTrend
+    };
   }
 
   // ============= DAILY SHIFT REPORT METHODS =============
@@ -1212,11 +1325,11 @@ export class DatabaseStorage implements IStorage {
 
   async getDailyShiftReportsByUser(userId: string, month?: string): Promise<DailyShiftReport[]> {
     let conditions = [eq(dailyShiftReports.userId, userId)];
-    
+
     if (month) {
       conditions.push(eq(dailyShiftReports.month, month));
     }
-    
+
     return db
       .select()
       .from(dailyShiftReports)
@@ -1226,7 +1339,7 @@ export class DatabaseStorage implements IStorage {
 
   async getDailyShiftReportsByMonth(month: string): Promise<(DailyShiftReport & { user: SafeUser })[]> {
     console.log(`Storage: Fetching daily reports for month "${month}"`);
-    
+
     const reports = await db
       .select({
         id: dailyShiftReports.id,
@@ -1274,15 +1387,15 @@ export class DatabaseStorage implements IStorage {
       .innerJoin(users, eq(dailyShiftReports.userId, users.id))
       .where(eq(dailyShiftReports.month, month))
       .orderBy(desc(dailyShiftReports.date));
-    
+
     console.log(`Storage: Found ${reports.length} reports for month ${month}`);
-    
+
     return reports as (DailyShiftReport & { user: SafeUser })[];
   }
 
   async getDailyShiftReportsByUserAndMonth(userId: string, month: string): Promise<DailyShiftReport[]> {
     console.log(`Storage: Fetching reports for user ${userId}, month ${month}`);
-    
+
     const reports = await db
       .select()
       .from(dailyShiftReports)
@@ -1291,14 +1404,14 @@ export class DatabaseStorage implements IStorage {
         eq(dailyShiftReports.month, month)
       ))
       .orderBy(desc(dailyShiftReports.date));
-    
+
     console.log(`Storage: Found ${reports.length} reports`);
     return reports;
   }
 
   async getDailyShiftReportsForDateRange(startDate: string, endDate: string): Promise<(DailyShiftReport & { user: SafeUser })[]> {
     console.log(`Storage: Fetching reports from ${startDate} to ${endDate}`);
-    
+
     const reports = await db
       .select({
         id: dailyShiftReports.id,
@@ -1349,7 +1462,7 @@ export class DatabaseStorage implements IStorage {
         lte(dailyShiftReports.date, endDate)
       ))
       .orderBy(desc(dailyShiftReports.createdAt));
-    
+
     console.log(`Storage: Found ${reports.length} reports for date range`);
     return reports as (DailyShiftReport & { user: SafeUser })[];
   }
@@ -1359,7 +1472,7 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(dailyShiftReports)
       .orderBy(desc(dailyShiftReports.createdAt));
-    
+
     console.log(`Storage: Total daily reports in database: ${reports.length}`);
     return reports;
   }
@@ -1410,17 +1523,17 @@ export class DatabaseStorage implements IStorage {
 
   async getSpecialRequestsByUser(userId: string, month?: string): Promise<SpecialRequest[]> {
     let conditions = [eq(specialRequests.userId, userId)];
-    
+
     if (month) {
       conditions.push(eq(specialRequests.month, month));
     }
-    
+
     const requests = await db
       .select()
       .from(specialRequests)
       .where(and(...conditions))
       .orderBy(desc(specialRequests.createdAt));
-    
+
     console.log(`Storage: Found ${requests.length} requests for user ${userId}, month: ${month}`);
     return requests;
   }
@@ -1470,17 +1583,17 @@ export class DatabaseStorage implements IStorage {
       .innerJoin(users, eq(specialRequests.userId, users.id))
       .where(eq(specialRequests.month, month))
       .orderBy(desc(specialRequests.createdAt));
-    
+
     return requests as (SpecialRequest & { user: SafeUser })[];
   }
 
   async getSpecialRequestsByStatus(status: string, month?: string): Promise<(SpecialRequest & { user: SafeUser })[]> {
     let conditions = [eq(specialRequests.status, status)];
-    
+
     if (month) {
       conditions.push(eq(specialRequests.month, month));
     }
-    
+
     const requests = await db
       .select({
         id: specialRequests.id,
@@ -1525,13 +1638,13 @@ export class DatabaseStorage implements IStorage {
       .innerJoin(users, eq(specialRequests.userId, users.id))
       .where(and(...conditions))
       .orderBy(desc(specialRequests.createdAt));
-    
+
     return requests as (SpecialRequest & { user: SafeUser })[];
   }
 
   async getSpecialRequestsByStatusWithUser(status: string, month: string): Promise<any[]> {
     console.log(`Storage: Fetching requests with status "${status}" for month "${month}"`);
-    
+
     const requests = await db
       .select({
         id: specialRequests.id,
@@ -1560,14 +1673,14 @@ export class DatabaseStorage implements IStorage {
         )
       )
       .orderBy(desc(specialRequests.createdAt));
-    
+
     console.log(`Storage: Found ${requests.length} requests`);
     return requests;
   }
 
   async getSpecialRequestsByMonthWithUser(month: string): Promise<any[]> {
     console.log(`Storage: Fetching all requests for month "${month}"`);
-    
+
     const requests = await db
       .select({
         id: specialRequests.id,
@@ -1591,7 +1704,7 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(users, eq(specialRequests.userId, users.id))
       .where(eq(specialRequests.month, month))
       .orderBy(desc(specialRequests.createdAt));
-    
+
     console.log(`Storage: Found ${requests.length} requests`);
     return requests;
   }
@@ -1601,7 +1714,7 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(specialRequests)
       .orderBy(desc(specialRequests.createdAt));
-    
+
     console.log(`Storage: Total requests in database: ${requests.length}`);
     return requests;
   }
@@ -1651,7 +1764,7 @@ export class DatabaseStorage implements IStorage {
       .innerJoin(users, eq(requestComments.userId, users.id))
       .where(eq(requestComments.requestId, requestId))
       .orderBy(requestComments.createdAt);
-    
+
     return comments as (RequestComment & { user: SafeUser })[];
   }
 
@@ -1682,7 +1795,7 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(users, eq(requestComments.userId, users.id))
       .where(eq(requestComments.requestId, requestId))
       .orderBy(requestComments.createdAt);
-    
+
     return comments;
   }
 
@@ -1704,7 +1817,7 @@ export class DatabaseStorage implements IStorage {
       .from(requestComments)
       .leftJoin(users, eq(requestComments.userId, users.id))
       .where(eq(requestComments.id, commentId));
-    
+
     return comment || null;
   }
 
@@ -1724,25 +1837,25 @@ export class DatabaseStorage implements IStorage {
       .select({ count: sql<number>`count(*)` })
       .from(dailyShiftReports)
       .where(eq(dailyShiftReports.month, month));
-    
+
     // Count requests for this month
     const requestCountResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(specialRequests)
       .where(eq(specialRequests.month, month));
-    
+
     // Mark reports as archived
     await db
       .update(dailyShiftReports)
       .set({ archived: true })
       .where(eq(dailyShiftReports.month, month));
-    
+
     // Mark requests as archived
     await db
       .update(specialRequests)
       .set({ archived: true })
       .where(eq(specialRequests.month, month));
-    
+
     // Create archive record
     const [archive] = await db
       .insert(monthlyArchive)
@@ -1752,7 +1865,7 @@ export class DatabaseStorage implements IStorage {
         totalRequests: Number(requestCountResult[0]?.count || 0),
       })
       .returning();
-    
+
     return archive;
   }
 

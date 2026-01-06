@@ -1,7 +1,8 @@
 // client/src/App.tsx
 import { Switch, Route, Redirect, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { format } from "date-fns";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -16,6 +17,7 @@ import {
   Search,
   Command,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -46,6 +48,7 @@ import EmployeeCalendarPage from "@/pages/employee/calendar";
 import ShiftReportPage from "@/pages/employee/shift-report";
 import SpecialRequestPage from "@/pages/employee/special-request";
 import EmployeeArchivePage from "@/pages/employee/archive";
+import NotificationsPage from "@/pages/notifications";
 
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
@@ -89,13 +92,15 @@ function DashboardHeader() {
       "/admin/daily-reports": "Daily Reports",
       "/admin/special-requests": "Special Requests",
       "/admin/archive": "Archive",
-      "/admin/targets": "Target Board", // ← ADD THIS
+      "/admin/targets": "Target Board",
+      "/admin/notifications": "Notifications",
       "/employee": "Dashboard",
       "/employee/attendance": "My Attendance",
       "/employee/calendar": "Calendar",
       "/employee/shift-report": "Shift Report",
       "/employee/special-request": "Special Request",
       "/employee/archive": "Archive",
+      "/employee/notifications": "Notifications",
     };
     return titles[location] || "Dashboard";
   };
@@ -140,52 +145,109 @@ function DashboardHeader() {
         </Button>
 
         {/* Notifications */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="relative h-9 w-9 rounded-xl">
-              <Bell className="w-4 h-4" />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full ring-2 ring-white dark:ring-slate-950 animate-pulse" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-80">
-            <DropdownMenuLabel className="flex items-center justify-between">
-              <span>Notifications</span>
-              <Badge variant="secondary" className="text-[10px] bg-red-100 text-red-600">
-                3 new
-              </Badge>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <div className="max-h-[300px] overflow-y-auto">
-              <DropdownMenuItem className="flex flex-col items-start gap-1 p-3 cursor-pointer">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full" />
-                  <span className="font-medium text-sm">New attendance record</span>
-                </div>
-                <span className="text-xs text-slate-500 pl-4">2 minutes ago</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem className="flex flex-col items-start gap-1 p-3 cursor-pointer">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-emerald-500 rounded-full" />
-                  <span className="font-medium text-sm">Report approved</span>
-                </div>
-                <span className="text-xs text-slate-500 pl-4">1 hour ago</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem className="flex flex-col items-start gap-1 p-3 cursor-pointer">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-orange-500 rounded-full" />
-                  <span className="font-medium text-sm">New request pending</span>
-                </div>
-                <span className="text-xs text-slate-500 pl-4">3 hours ago</span>
-              </DropdownMenuItem>
-            </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem className="justify-center text-blue-600 font-medium cursor-pointer">
-              View all notifications
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <NotificationsDropdown />
       </div>
     </header>
+  );
+}
+
+// Notifications Dropdown Component
+function NotificationsDropdown() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [, setLocation] = useLocation();
+
+  const { data: notifications, isLoading } = useQuery<any[]>({
+    queryKey: [isAdmin ? "/api/admin/notifications" : "/api/notifications"],
+    staleTime: 30000,
+    refetchInterval: 60000, // Refresh every minute
+  });
+
+  const getNotificationIcon = (action: string) => {
+    switch (action) {
+      case "clock_in":
+      case "morning_clock_in":
+      case "evening_clock_in":
+        return "bg-blue-500";
+      case "clock_out":
+      case "morning_clock_out":
+      case "evening_clock_out":
+        return "bg-orange-500";
+      case "special_request_created":
+        return "bg-purple-500";
+      case "special_request_comment":
+        return "bg-indigo-500";
+      case "special_request_status_update":
+        return "bg-blue-600";
+      default:
+        return "bg-slate-400";
+    }
+  };
+
+  const formatTime = (timestamp: string) => {
+    const d = new Date(timestamp);
+    const now = new Date();
+    const diff = Math.floor((now.getTime() - d.getTime()) / 60000);
+    if (diff < 1) return "Just now";
+    if (diff < 60) return `${diff}m ago`;
+    if (diff < 1440) return `${Math.floor(diff / 60)}h ago`;
+    return format(d, "MMM dd");
+  };
+
+  const recentNotifications = notifications?.slice(0, 5) || [];
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="relative h-9 w-9 rounded-xl">
+          <Bell className="w-4 h-4" />
+          {recentNotifications.length > 0 && (
+            <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full ring-2 ring-white dark:ring-slate-950 animate-pulse" />
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-80">
+        <DropdownMenuLabel className="flex items-center justify-between">
+          <span>Recent Activity</span>
+          {recentNotifications.length > 0 && (
+            <Badge variant="secondary" className="text-[10px] bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
+              New activity
+            </Badge>
+          )}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <div className="max-h-[350px] overflow-y-auto">
+          {isLoading ? (
+            <div className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-slate-300" /></div>
+          ) : recentNotifications.length > 0 ? (
+            recentNotifications.map((n) => (
+              <DropdownMenuItem
+                key={n.id}
+                className="flex flex-col items-start gap-1 p-3 cursor-pointer"
+                onClick={() => setLocation(isAdmin ? "/admin/notifications" : "/employee/notifications")}
+              >
+                <div className="flex items-center gap-2">
+                  <div className={cn("w-2 h-2 rounded-full", getNotificationIcon(n.action))} />
+                  <span className="font-medium text-sm line-clamp-1">
+                    {isAdmin && n.user ? `${n.user.firstName}: ` : ""}{n.details}
+                  </span>
+                </div>
+                <span className="text-xs text-slate-500 pl-4">{formatTime(n.timestamp)}</span>
+              </DropdownMenuItem>
+            ))
+          ) : (
+            <div className="p-8 text-center text-sm text-slate-500">No recent notifications</div>
+          )}
+        </div>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="justify-center text-blue-600 font-medium cursor-pointer"
+          onClick={() => setLocation(isAdmin ? "/admin/notifications" : "/employee/notifications")}
+        >
+          View all notifications
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -297,6 +359,13 @@ function AppRoutes() {
       {/* ↑↑↑ ADD THIS NEW ROUTE ↑↑↑ */}
 
       {/* Employee Routes */}
+      <Route path="/admin/notifications">
+        <ProtectedRoute requiredRole="admin">
+          <DashboardLayout>
+            <NotificationsPage />
+          </DashboardLayout>
+        </ProtectedRoute>
+      </Route>
       <Route path="/employee">
         <ProtectedRoute requiredRole="employee">
           <DashboardLayout>
@@ -339,7 +408,13 @@ function AppRoutes() {
           </DashboardLayout>
         </ProtectedRoute>
       </Route>
-
+      <Route path="/employee/notifications">
+        <ProtectedRoute requiredRole="employee">
+          <DashboardLayout>
+            <NotificationsPage />
+          </DashboardLayout>
+        </ProtectedRoute>
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );

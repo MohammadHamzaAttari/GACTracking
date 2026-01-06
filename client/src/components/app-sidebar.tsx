@@ -481,7 +481,10 @@ const UserMenu = ({ collapsed }: { collapsed: boolean }) => {
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator className="bg-slate-800" />
-        <DropdownMenuItem className="text-slate-300 hover:text-white hover:bg-white/5 focus:bg-white/5">
+        <DropdownMenuItem
+          className="text-slate-300 hover:text-white hover:bg-white/5 focus:bg-white/5 cursor-pointer"
+          onClick={() => setLocation(user?.role === "admin" ? "/admin/notifications" : "/employee/notifications")}
+        >
           <Bell className="w-4 h-4 mr-2" />
           Notifications
         </DropdownMenuItem>

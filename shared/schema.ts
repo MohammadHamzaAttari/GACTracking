@@ -97,11 +97,14 @@ export const targetItems = pgTable("target_items", {
   type: text("type").notNull(), // 'meeting' or 'order'
   name: text("name").notNull(),
   source: text("source"), // 'Top Upwork', 'B2B', etc.
+  clientType: text("client_type"), // 'B2B' or 'B2C'
   contactLink: text("contact_link"),
   date: date("date").notNull(),
   verified: boolean("verified").default(false),
   verifiedAt: timestamp("verified_at"),
   verifiedBy: varchar("verified_by").references(() => users.id),
+  isRejected: boolean("is_rejected").default(false),
+  rejectionReason: text("rejection_reason"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
