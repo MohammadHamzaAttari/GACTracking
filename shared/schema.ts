@@ -11,7 +11,8 @@ export const departments = pgTable("departments", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-// Users table with enhanced fields for employee management
+// shared/schema.ts - Update the users table to add these columns
+
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
@@ -19,21 +20,31 @@ export const users = pgTable("users", {
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email"),
-  role: text("role").notNull().default("employee"), // 'admin' or 'employee'
-  department: text("department"), // Development, Business Development, Designing Team
+  role: text("role").notNull().default("employee"),
+  department: text("department"),
   position: text("position"),
-  salary: integer("salary"), // Monthly salary in PKR
-  status: text("status").notNull().default("active"), // 'active' or 'inactive'
-  shiftType: text("shift_type").notNull().default("one_shift"), // 'one_shift', 'two_shifts', 'open'
-  shiftStartTime: time("shift_start_time"),
-  shiftEndTime: time("shift_end_time"),
+  salary: integer("salary"),
+  status: text("status").notNull().default("active"),
+  shiftType: text("shift_type").notNull().default("one_shift"),
+
+  // One shift times
+  shiftStartTime: text("shift_start_time"), // Changed from time() to text() for easier handling
+  shiftEndTime: text("shift_end_time"),
+
+  // Two shift times - ADD THESE COLUMNS
+  morningShiftStart: text("morning_shift_start"),
+  morningShiftEnd: text("morning_shift_end"),
+  eveningShiftStart: text("evening_shift_start"),
+  eveningShiftEnd: text("evening_shift_end"),
+
   phone: text("phone"),
-  whatsappPreference: text("whatsapp_preference").default("both"), // 'both', 'breaks_only', 'shift_reports_only', 'none'
+  whatsappPreference: text("whatsapp_preference").default("both"),
   address: text("address"),
   emergencyContact: text("emergency_contact"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
 
 // Shifts table for daily clock in/out records (morning/evening shifts)
 export const shifts = pgTable("shifts", {
@@ -371,7 +382,7 @@ export type SafeUser = Omit<User, "password">;
 
 // Break limits configuration
 export const BREAK_LIMITS = {
-  prayer: { maxPerDay: 3, shiftPeriod: "morning" as const },
+  prayer: { maxPerDay: 3, shiftPeriod: "any" as const },      // ✅ Changed from "morning" to "any"
   meal: { maxPerDay: 1, shiftPeriod: "any" as const },
   urgent: { maxPerShift: 2, shiftPeriod: "any" as const },
 } as const;
@@ -379,7 +390,7 @@ export const BREAK_LIMITS = {
 // Departments list
 export const DEPARTMENTS = [
   "Development",
-  "Business Development", 
+  "Business Development",
   "Designing Team",
 ] as const;
 

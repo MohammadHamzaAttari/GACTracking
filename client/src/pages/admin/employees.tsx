@@ -93,10 +93,60 @@ import { cn } from "@/lib/utils";
 // Use a constant for "no selection" instead of empty string
 const NO_DEPARTMENT = "none";
 
-// Schema for creating a new employee (password required)
-const createEmployeeSchema = z.object({
+// Refinement function for conditional shift time validation
+const shiftTimeRefinement = (data: any, ctx: z.RefinementCtx) => {
+  if (data.shiftType === "one_shift") {
+    if (!data.shiftStartTime || data.shiftStartTime === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Start time is required for one shift",
+        path: ["shiftStartTime"],
+      });
+    }
+    if (!data.shiftEndTime || data.shiftEndTime === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "End time is required for one shift",
+        path: ["shiftEndTime"],
+      });
+    }
+  }
+  
+  if (data.shiftType === "two_shifts") {
+    if (!data.morningShiftStart || data.morningShiftStart === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Morning start time is required",
+        path: ["morningShiftStart"],
+      });
+    }
+    if (!data.morningShiftEnd || data.morningShiftEnd === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Morning end time is required",
+        path: ["morningShiftEnd"],
+      });
+    }
+    if (!data.eveningShiftStart || data.eveningShiftStart === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Evening start time is required",
+        path: ["eveningShiftStart"],
+      });
+    }
+    if (!data.eveningShiftEnd || data.eveningShiftEnd === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Evening end time is required",
+        path: ["eveningShiftEnd"],
+      });
+    }
+  }
+};
+
+// Base schema fields (without password)
+const baseEmployeeFields = {
   username: z.string().min(3, "Username must be at least 3 characters"),
-  password: z.string().min(4, "Password must be at least 4 characters"),
   firstName: z.string().min(1, "First name is required"),
   lastName: z.string().min(1, "Last name is required"),
   email: z.string().email("Invalid email").optional().or(z.literal("")),
@@ -115,12 +165,19 @@ const createEmployeeSchema = z.object({
   whatsappPreference: z.enum(["both", "breaks_only", "shift_reports_only", "none"]).default("both"),
   address: z.string().optional(),
   emergencyContact: z.string().optional(),
-});
+};
+
+// Schema for creating a new employee (password required)
+const createEmployeeSchema = z.object({
+  ...baseEmployeeFields,
+  password: z.string().min(4, "Password must be at least 4 characters"),
+}).superRefine(shiftTimeRefinement);
 
 // Schema for updating an existing employee (password optional)
-const updateEmployeeSchema = createEmployeeSchema.extend({
+const updateEmployeeSchema = z.object({
+  ...baseEmployeeFields,
   password: z.string().min(4, "Password must be at least 4 characters").optional().or(z.literal("")),
-});
+}).superRefine(shiftTimeRefinement);
 
 type CreateEmployeeFormData = z.infer<typeof createEmployeeSchema>;
 type UpdateEmployeeFormData = z.infer<typeof updateEmployeeSchema>;
@@ -620,7 +677,7 @@ export default function EmployeesPage() {
                       </Button>
                     </DialogTrigger>
                     
-                    {/* MODAL FORM - UNCHANGED */}
+                    {/* MODAL FORM */}
                     <DialogContent className="sm:max-w-2xl max-h-[90vh]">
                       <DialogHeader>
                         <DialogTitle className="flex items-center gap-2">
@@ -858,6 +915,7 @@ export default function EmployeesPage() {
                                       <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
                                         <Sun className="w-4 h-4 text-amber-500" />
                                         Shift Schedule
+                                        <span className="text-xs text-red-500 font-normal">(Required)</span>
                                       </div>
                                       <div className="grid grid-cols-2 gap-4">
                                         <FormField
@@ -867,7 +925,7 @@ export default function EmployeesPage() {
                                             <FormItem>
                                               <FormLabel className="flex items-center gap-2">
                                                 <Sunrise className="w-4 h-4 text-orange-500" />
-                                                Start Time
+                                                Start Time *
                                               </FormLabel>
                                               <FormControl>
                                                 <Input 
@@ -887,7 +945,7 @@ export default function EmployeesPage() {
                                             <FormItem>
                                               <FormLabel className="flex items-center gap-2">
                                                 <Sunset className="w-4 h-4 text-purple-500" />
-                                                End Time
+                                                End Time *
                                               </FormLabel>
                                               <FormControl>
                                                 <Input 
@@ -910,6 +968,7 @@ export default function EmployeesPage() {
                                         <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
                                           <Sun className="w-4 h-4" />
                                           Morning Shift
+                                          <span className="text-xs text-red-500 font-normal">(Required)</span>
                                         </div>
                                         <div className="grid grid-cols-2 gap-4">
                                           <FormField
@@ -919,7 +978,7 @@ export default function EmployeesPage() {
                                               <FormItem>
                                                 <FormLabel className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
                                                   <Sunrise className="w-4 h-4" />
-                                                  Start Time
+                                                  Start Time *
                                                 </FormLabel>
                                                 <FormControl>
                                                   <Input 
@@ -940,7 +999,7 @@ export default function EmployeesPage() {
                                               <FormItem>
                                                 <FormLabel className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
                                                   <Sunset className="w-4 h-4" />
-                                                  End Time
+                                                  End Time *
                                                 </FormLabel>
                                                 <FormControl>
                                                   <Input 
@@ -961,6 +1020,7 @@ export default function EmployeesPage() {
                                         <div className="flex items-center gap-2 text-sm font-medium text-indigo-700 dark:text-indigo-400">
                                           <Moon className="w-4 h-4" />
                                           Evening Shift
+                                          <span className="text-xs text-red-500 font-normal">(Required)</span>
                                         </div>
                                         <div className="grid grid-cols-2 gap-4">
                                           <FormField
@@ -970,7 +1030,7 @@ export default function EmployeesPage() {
                                               <FormItem>
                                                 <FormLabel className="flex items-center gap-2 text-indigo-700 dark:text-indigo-400">
                                                   <Sunrise className="w-4 h-4" />
-                                                  Start Time
+                                                  Start Time *
                                                 </FormLabel>
                                                 <FormControl>
                                                   <Input 
@@ -991,7 +1051,7 @@ export default function EmployeesPage() {
                                               <FormItem>
                                                 <FormLabel className="flex items-center gap-2 text-indigo-700 dark:text-indigo-400">
                                                   <Sunset className="w-4 h-4" />
-                                                  End Time
+                                                  End Time *
                                                 </FormLabel>
                                                 <FormControl>
                                                   <Input 

@@ -141,15 +141,14 @@ function getTotalLateMinutes(shift: ShiftWithUser | null): number {
 // NEW: Format late minutes for display
 function formatLateMinutes(minutes: number): string {
   if (minutes <= 0) return "—";
-  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
-  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  return `${hours}h ${mins < 10 ? '0' + mins : mins}m`;
 }
 
 function calculateDuration(
-  clockIn: string | Date | null | undefined, 
-  clockOut: string | Date | null | undefined, 
+  clockIn: string | Date | null | undefined,
+  clockOut: string | Date | null | undefined,
   breaks?: Break[]
 ): string {
   if (!clockIn) return "—";
@@ -200,9 +199,9 @@ function isShiftForDate(shift: Shift, targetDate: Date): boolean {
 
 function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, selectedDate: Date) {
   if (!shift) {
-    return { 
-      status: "absent", 
-      label: "Absent", 
+    return {
+      status: "absent",
+      label: "Absent",
       color: "text-red-600",
       bg: "bg-red-50 dark:bg-red-900/30",
       icon: XCircle
@@ -212,9 +211,9 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, se
   // Check for active breaks
   const hasActiveBreak = shift.breaks?.some(b => b.startTime && !b.endTime);
   if (hasActiveBreak) {
-    return { 
-      status: "break", 
-      label: "On Break", 
+    return {
+      status: "break",
+      label: "On Break",
       color: "text-amber-600",
       bg: "bg-amber-50 dark:bg-amber-900/30",
       icon: Coffee
@@ -234,18 +233,18 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, se
 
   if (isCurrentlyWorking) {
     if (isLate) {
-      return { 
-        status: "late", 
-        label: "Late", 
+      return {
+        status: "late",
+        label: "Late",
         color: "text-amber-600",
         bg: "bg-amber-50 dark:bg-amber-900/30",
         icon: AlertCircle
       };
     }
 
-    return { 
-      status: "present", 
-      label: "Working", 
+    return {
+      status: "present",
+      label: "Working",
       color: "text-emerald-600",
       bg: "bg-emerald-50 dark:bg-emerald-900/30",
       icon: CheckCircle
@@ -255,26 +254,26 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, se
   // Has completed a shift
   if (morningOut || eveningOut) {
     if (isLate) {
-      return { 
-        status: "completed_late", 
-        label: "Completed (Late)", 
+      return {
+        status: "completed_late",
+        label: "Completed (Late)",
         color: "text-amber-600",
         bg: "bg-amber-50 dark:bg-amber-900/30",
         icon: AlertCircle
       };
     }
-    return { 
-      status: "completed", 
-      label: "Completed", 
+    return {
+      status: "completed",
+      label: "Completed",
       color: "text-blue-600",
       bg: "bg-blue-50 dark:bg-blue-900/30",
       icon: CheckCircle
     };
   }
 
-  return { 
-    status: "absent", 
-    label: "No Record", 
+  return {
+    status: "absent",
+    label: "No Record",
     color: "text-slate-400",
     bg: "bg-slate-50 dark:bg-slate-800",
     icon: XCircle
@@ -282,17 +281,17 @@ function getAttendanceStatus(shift: ShiftWithUser | null, employee: SafeUser, se
 }
 
 // Mini Stat Pill
-function StatPill({ 
-  icon: Icon, 
-  value, 
-  label, 
+function StatPill({
+  icon: Icon,
+  value,
+  label,
   color,
   active,
   onClick
-}: { 
-  icon: any; 
-  value: number | string; 
-  label: string; 
+}: {
+  icon: any;
+  value: number | string;
+  label: string;
   color: string;
   active?: boolean;
   onClick?: () => void;
@@ -303,8 +302,8 @@ function StatPill({
       className={cn(
         "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-all",
         "hover:scale-105 active:scale-95",
-        active 
-          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-lg" 
+        active
+          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-lg"
           : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 shadow-sm hover:shadow-md"
       )}
     >
@@ -316,12 +315,12 @@ function StatPill({
 }
 
 // Attendance Row Component
-function AttendanceRow({ 
-  employee, 
+function AttendanceRow({
+  employee,
   shift,
   selectedDate
-}: { 
-  employee: SafeUser; 
+}: {
+  employee: SafeUser;
   shift: ShiftWithUser | null;
   selectedDate: Date;
 }) {
@@ -418,8 +417,8 @@ function AttendanceRow({
             {formatLateMinutes(totalLateMinutes)}
           </span>
           {/* Show breakdown if both morning and evening have late minutes */}
-          {shift && shift.morningLateMinutes && shift.morningLateMinutes > 0 && 
-           shift.eveningLateMinutes && shift.eveningLateMinutes > 0 && (
+          {!!shift && (shift.morningLateMinutes || 0) > 0 && (shift.eveningLateMinutes || 0) > 0 && (
+
             <Tooltip>
               <TooltipTrigger>
                 <span className="text-[10px] text-slate-400">(M+E)</span>
@@ -460,12 +459,12 @@ function AttendanceRow({
 }
 
 // Department Group
-function DepartmentGroup({ 
-  department, 
+function DepartmentGroup({
+  department,
   attendanceData,
   selectedDate
-}: { 
-  department: string; 
+}: {
+  department: string;
   attendanceData: AttendanceRecord[];
   selectedDate: Date;
 }) {
@@ -539,10 +538,10 @@ function DepartmentGroup({
           </TableHeader>
           <TableBody>
             {attendanceData.map(({ employee, shift }) => (
-              <AttendanceRow 
-                key={employee.id} 
-                employee={employee} 
-                shift={shift} 
+              <AttendanceRow
+                key={employee.id}
+                employee={employee}
+                shift={shift}
                 selectedDate={selectedDate}
               />
             ))}
@@ -559,10 +558,10 @@ function useAttendanceData(selectedDate: Date) {
   const { toast } = useToast();
 
   // Fetch all employees
-  const { 
-    data: employees = [], 
+  const {
+    data: employees = [],
     isLoading: employeesLoading,
-    error: employeesError 
+    error: employeesError
   } = useQuery<SafeUser[]>({
     queryKey: ["/api/admin/employees"],
     queryFn: async () => {
@@ -575,19 +574,19 @@ function useAttendanceData(selectedDate: Date) {
     staleTime: 5 * 60 * 1000, // 5 minutes
     select: (data) => {
       // Filter only active employees
-      return data.filter(emp => 
-        emp.role === "employee" && 
+      return data.filter(emp =>
+        emp.role === "employee" &&
         emp.status === "active"
       );
     },
   });
 
   // Fetch shifts for selected date
-  const { 
-    data: shifts = [], 
+  const {
+    data: shifts = [],
     isLoading: shiftsLoading,
     error: shiftsError,
-    refetch 
+    refetch
   } = useQuery<ShiftWithUser[]>({
     queryKey: ["/api/admin/shifts", { date: dateParam }],
     queryFn: async () => {
@@ -692,11 +691,11 @@ function useAttendanceData(selectedDate: Date) {
       }
     });
 
-    return { 
-      total: employees.length, 
-      present, 
-      late, 
-      absent, 
+    return {
+      total: employees.length,
+      present,
+      late,
+      absent,
       onBreak,
       totalLateMinutes
     };
@@ -748,7 +747,7 @@ export default function AttendancePage() {
 
     // Department filter
     if (departmentFilter !== "all") {
-      filtered = filtered.filter(({ employee }) => 
+      filtered = filtered.filter(({ employee }) =>
         employee.department === departmentFilter
       );
     }
@@ -942,42 +941,42 @@ export default function AttendancePage() {
 
         {/* Stats Pills */}
         <div className="flex items-center gap-1.5 flex-wrap">
-          <StatPill 
-            icon={Users} 
-            value={stats.total} 
-            label="Total" 
+          <StatPill
+            icon={Users}
+            value={stats.total}
+            label="Total"
             color="text-slate-500"
             active={statusFilter === "all"}
             onClick={() => setStatusFilter("all")}
           />
-          <StatPill 
-            icon={CheckCircle} 
-            value={stats.present} 
-            label="Present" 
+          <StatPill
+            icon={CheckCircle}
+            value={stats.present}
+            label="Present"
             color="text-emerald-500"
             active={statusFilter === "present"}
             onClick={() => setStatusFilter("present")}
           />
-          <StatPill 
-            icon={AlertCircle} 
-            value={stats.late} 
-            label="Late" 
+          <StatPill
+            icon={AlertCircle}
+            value={stats.late}
+            label="Late"
             color="text-amber-500"
             active={statusFilter === "late"}
             onClick={() => setStatusFilter("late")}
           />
-          <StatPill 
-            icon={XCircle} 
-            value={stats.absent} 
-            label="Absent" 
+          <StatPill
+            icon={XCircle}
+            value={stats.absent}
+            label="Absent"
             color="text-red-500"
             active={statusFilter === "absent"}
             onClick={() => setStatusFilter("absent")}
           />
-          <StatPill 
-            icon={Coffee} 
-            value={stats.onBreak} 
-            label="Break" 
+          <StatPill
+            icon={Coffee}
+            value={stats.onBreak}
+            label="Break"
             color="text-orange-500"
             active={statusFilter === "break"}
             onClick={() => setStatusFilter("break")}
@@ -1098,8 +1097,8 @@ export default function AttendancePage() {
               </div>
               <p className="font-medium text-slate-900 dark:text-white mb-1">No records found</p>
               <p className="text-sm text-slate-500 mb-4">
-                {hasActiveFilters 
-                  ? "Try adjusting your filters or search query" 
+                {hasActiveFilters
+                  ? "Try adjusting your filters or search query"
                   : "No attendance data for this date"}
               </p>
               {hasActiveFilters && (
@@ -1138,9 +1137,9 @@ export default function AttendancePage() {
               </TableHeader>
               <TableBody>
                 {filteredData.map(({ employee, shift }) => (
-                  <AttendanceRow 
-                    key={employee.id} 
-                    employee={employee} 
+                  <AttendanceRow
+                    key={employee.id}
+                    employee={employee}
                     shift={shift}
                     selectedDate={selectedDate}
                   />

@@ -1,5 +1,3 @@
-// client/src/pages/employee/dashboard.tsx
-
 import React, { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { format, differenceInSeconds } from "date-fns";
@@ -22,7 +20,7 @@ import {
   CheckCircle,
   Circle,
   Pause,
-  Target as TargetIcon, // ✅ RENAMED to avoid conflict
+  Target as TargetIcon,
   AlertTriangle,
   Lock,
   Unlock,
@@ -49,7 +47,8 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Search,
-  RefreshCw
+  RefreshCw,
+  Video,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -102,7 +101,7 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Shift, Break, TargetItem, Target as TargetType } from "@shared/schema"; // ✅ RENAMED
+import type { Shift, Break, TargetItem, Target as TargetType, DailyShiftReport } from "@shared/schema";
 import { cn } from "@/lib/utils";
 
 // --- Types ---
@@ -126,6 +125,63 @@ interface TargetsSummary {
     verified: number;
     items: TargetItem[];
   };
+}
+
+// === LOOM URL VALIDATION ===
+function isValidLoomUrl(url: string): { valid: boolean; error: string } {
+  if (!url || !url.trim()) {
+    return { valid: false, error: "URL cannot be empty" };
+  }
+
+  const trimmedUrl = url.trim();
+
+  // Check if it starts with http:// or https://
+  if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
+    return { valid: false, error: "URL must start with https://" };
+  }
+
+  try {
+    const urlObj = new URL(trimmedUrl);
+
+    // Check if it's a loom.com domain
+    const hostname = urlObj.hostname.toLowerCase();
+    const isLoomDomain =
+      hostname === "loom.com" ||
+      hostname === "www.loom.com" ||
+      hostname.endsWith(".loom.com");
+
+    if (!isLoomDomain) {
+      return {
+        valid: false,
+        error: "URL must be from loom.com (e.g., https://www.loom.com/share/...)",
+      };
+    }
+
+    // Check if the path starts with /share/ or /embed/
+    const pathname = urlObj.pathname.toLowerCase();
+    const validPath =
+      pathname.startsWith("/share/") || pathname.startsWith("/embed/");
+
+    if (!validPath) {
+      return {
+        valid: false,
+        error: "URL must be a Loom share or embed link (e.g., https://www.loom.com/share/...)",
+      };
+    }
+
+    // Check if there's an ID after /share/ or /embed/
+    const pathParts = pathname.split("/").filter(Boolean);
+    if (pathParts.length < 2 || !pathParts[1]) {
+      return {
+        valid: false,
+        error: "Invalid Loom URL - missing video ID",
+      };
+    }
+
+    return { valid: true, error: "" };
+  } catch (e) {
+    return { valid: false, error: "Invalid URL format" };
+  }
 }
 
 // === BUSINESS DEVELOPMENT SOURCES ===
@@ -643,7 +699,8 @@ function BusinessDevelopmentBoard() {
       if (!res.ok) throw new Error("Failed to fetch targets");
       return res.json();
     },
-    refetchInterval: 1000,
+    // PERFORMANCE OPTIMIZATION: Remove frequent polling
+    staleTime: 60000,
   });
 
   const deleteMutation = useMutation({
@@ -929,8 +986,10 @@ export default function EmployeeDashboard() {
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const [reportContent, setReportContent] = useState("");
   const [loomLinks, setLoomLinks] = useState("");
+  const [loomLinkError, setLoomLinkError] = useState("");
   const [references, setReferences] = useState("");
   const [notes, setNotes] = useState("");
+  const [existingReportId, setExistingReportId] = useState<string | null>(null);
   const [endShiftDialogOpen, setEndShiftDialogOpen] = useState(false);
 
   const { user } = useAuth();
@@ -943,7 +1002,8 @@ export default function EmployeeDashboard() {
 
   const { data: todayStatus, isLoading } = useQuery<TodayStatus>({
     queryKey: ["/api/employee/today"],
-    refetchInterval: 1000,
+    // PERFORMANCE OPTIMIZATION: Remove frequent polling, rely on local updates and invalidation
+    refetchInterval: 0,
   });
 
   const shift = todayStatus?.shift;
@@ -952,10 +1012,50 @@ export default function EmployeeDashboard() {
   const isOnBreak = !!activeBreak;
   const hasSubmittedReport = todayStatus?.hasSubmittedReport || false;
 
+  // Fetch report details when opening dialog if already submitted
+  useEffect(() => {
+    if (reportDialogOpen && hasSubmittedReport && shift?.id) {
+      const fetchReport = async () => {
+        try {
+          const res = await fetch(`/api/reports/daily/shift/${shift.id}`);
+          if (res.ok) {
+            const report = await res.json();
+            if (report) {
+              setExistingReportId(report.id);
+              setReportContent(report.workDetails || "");
+              setNotes(report.notes || "");
+
+              // Handle JSON array fields
+              try {
+                if (report.references) {
+                  const refs = JSON.parse(report.references);
+                  setReferences(Array.isArray(refs) ? refs[0] || "" : report.references);
+                }
+              } catch { setReferences(report.references || ""); }
+
+              try {
+                if (report.loomVideos) {
+                  const looms = JSON.parse(report.loomVideos);
+                  setLoomLinks(Array.isArray(looms) ? looms[0] || "" : report.loomVideos);
+                }
+              } catch { setLoomLinks(report.loomVideos || ""); }
+            }
+          }
+        } catch (error) {
+          console.error("Failed to fetch existing report:", error);
+        }
+      };
+      fetchReport();
+    } else if (!reportDialogOpen) {
+      setExistingReportId(null);
+      setLoomLinkError("");
+    }
+  }, [reportDialogOpen, hasSubmittedReport, shift?.id]);
+
   const totalBreakSeconds = useMemo(() => {
     return breaks.reduce((acc, b) => {
       if (b.endTime) return acc + differenceInSeconds(new Date(b.endTime), new Date(b.startTime));
-      else if (b.startTime) return acc + differenceInSeconds(new Date(), new Date(b.startTime));
+      else if (b.startTime) return acc + differenceInSeconds(currentTime, new Date(b.startTime));
       return acc;
     }, 0);
   }, [breaks, currentTime]);
@@ -969,7 +1069,7 @@ export default function EmployeeDashboard() {
   const grossWorkedSeconds = useMemo(() => {
     if (!currentStart) return 0;
     const startTime = new Date(currentStart);
-    const endTime = currentEnd ? new Date(currentEnd) : new Date();
+    const endTime = currentEnd ? new Date(currentEnd) : currentTime;
     return differenceInSeconds(endTime, startTime);
   }, [currentStart, currentEnd, currentTime]);
 
@@ -993,8 +1093,21 @@ export default function EmployeeDashboard() {
     return Math.min(Math.round((netWorkedSeconds / targetSeconds) * 100), 100);
   };
 
+  // === FIXED EFFICIENCY LOGIC ===
   const calculateEfficiency = () => {
-    if (grossWorkedSeconds === 0) return 0;
+    if (!isStarted) return 0;
+
+    // Shift Completed Logic: Efficiency = Net Worked / Target (8h)
+    // This penalizes short shifts (e.g. 2h work = 25% efficiency).
+    if (isEnded) {
+      const targetSeconds = 8 * 60 * 60; // 8 hours
+      const targetEfficiency = (netWorkedSeconds / targetSeconds) * 100;
+      return Math.min(Math.round(targetEfficiency), 100);
+    }
+
+    // Active Shift Logic: Efficiency = Net / Gross
+    // This tracks break discipline while working.
+    if (grossWorkedSeconds === 0) return 100;
     return Math.round((netWorkedSeconds / grossWorkedSeconds) * 100);
   };
 
@@ -1021,13 +1134,105 @@ export default function EmployeeDashboard() {
   const endShift = async () => { if (!hasSubmittedReport) { setReportDialogOpen(true); return; } setIsEndingShift(true); await handleMutation(apiRequest("POST", `/api/employee/shift/${activeTab}/end`), `${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} shift ended`, () => setEndShiftDialogOpen(false)); setIsEndingShift(false); };
   const startBreak = async () => { if (!selectedBreakType) { toast({ title: "Select Break Type", description: "Please select a break type first", variant: "destructive" }); return; } setIsStartingBreak(true); await handleMutation(apiRequest("POST", "/api/employee/break/start", { type: selectedBreakType }), `${selectedBreakType.charAt(0).toUpperCase() + selectedBreakType.slice(1)} break started`, () => setSelectedBreakType("")); setIsStartingBreak(false); };
   const endBreak = async () => { setIsEndingBreak(true); await handleMutation(apiRequest("POST", "/api/employee/break/end"), "Break ended"); setIsEndingBreak(false); };
-  
+
+  // Handle loom link input change with validation
+  const handleLoomLinkChange = (value: string) => {
+    setLoomLinks(value);
+    // Clear error when user starts typing
+    if (loomLinkError) {
+      setLoomLinkError("");
+    }
+  };
+
+  // Validate loom link on blur
+  const validateLoomLinkOnBlur = () => {
+    if (loomLinks.trim()) {
+      const validation = isValidLoomUrl(loomLinks.trim());
+      if (!validation.valid) {
+        setLoomLinkError(validation.error);
+      } else {
+        setLoomLinkError("");
+      }
+    } else {
+      setLoomLinkError("");
+    }
+  };
+
   const submitReport = async () => {
-    if (!reportContent.trim()) { toast({ title: "Report Required", description: "Please describe what you worked on today", variant: "destructive" }); return; }
+    const isDevelopment = user?.department === "Development";
+
+    if (!reportContent.trim()) {
+      toast({ title: "Validation Error", description: "Work details are required", variant: "destructive" });
+      return;
+    }
+    if (!notes.trim()) {
+      toast({ title: "Validation Error", description: "Notes are required", variant: "destructive" });
+      return;
+    }
+    if (!references.trim()) {
+      toast({ title: "Validation Error", description: "References are required", variant: "destructive" });
+      return;
+    }
+
+    // Validate Loom URL if provided or required
+    if (loomLinks.trim()) {
+      const validation = isValidLoomUrl(loomLinks.trim());
+      if (!validation.valid) {
+        setLoomLinkError(validation.error);
+        toast({
+          title: "Invalid Loom URL",
+          description: validation.error,
+          variant: "destructive"
+        });
+        return;
+      }
+    }
+
+    if (isDevelopment && !loomLinks.trim()) {
+      toast({
+        title: "Validation Error",
+        description: "Loom video is compulsory to end the shift for the Development team",
+        variant: "destructive"
+      });
+      return;
+    }
+
     setIsSubmittingReport(true);
-    const reportData = { shiftId: shift?.id, date: new Date().toISOString().split("T")[0], workDetails: reportContent.trim(), loomVideos: loomLinks.trim() || null, references: references.trim() || null, notes: notes.trim() || null, month: new Date().toISOString().slice(0, 7) };
-    await handleMutation(apiRequest("POST", "/api/reports/daily", reportData), "Report submitted successfully", () => { setReportDialogOpen(false); setReportContent(""); setLoomLinks(""); setReferences(""); setNotes(""); queryClient.invalidateQueries({ queryKey: ["/api/employee/today"] }); });
+    const reportData = {
+      shiftId: shift?.id,
+      workDetails: reportContent.trim(),
+      loomVideos: loomLinks.trim() ? JSON.stringify([loomLinks.trim()]) : null,
+      notes: notes.trim(),
+      references: references.trim() ? JSON.stringify([references.trim()]) : null,
+      date: format(new Date(), "yyyy-MM-dd"),
+      month: format(new Date(), "yyyy-MM")
+    };
+
+    const method = existingReportId ? "PATCH" : "POST";
+    const url = existingReportId ? `/api/reports/daily/${existingReportId}` : "/api/reports/daily";
+    const successMsg = existingReportId ? "Report updated successfully" : "Report submitted successfully";
+
+    await handleMutation(apiRequest(method, url, reportData), successMsg, () => {
+      setReportDialogOpen(false);
+      setReportContent("");
+      setLoomLinks("");
+      setLoomLinkError("");
+      setReferences("");
+      setNotes("");
+      setExistingReportId(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/employee/today"] });
+    });
     setIsSubmittingReport(false);
+  };
+
+  // Check if form is valid for submission
+  const isFormValid = () => {
+    const isDevelopment = user?.department === "Development";
+    const hasRequiredFields = reportContent.trim() && notes.trim() && references.trim();
+    const hasValidLoomLink = !loomLinks.trim() || isValidLoomUrl(loomLinks.trim()).valid;
+    const hasLoomIfRequired = !isDevelopment || loomLinks.trim();
+
+    return hasRequiredFields && hasValidLoomLink && hasLoomIfRequired && !loomLinkError;
   };
 
   if (isLoading) {
@@ -1153,8 +1358,14 @@ export default function EmployeeDashboard() {
                 <CardContent className="p-4">
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-full bg-emerald-100 dark:bg-emerald-900/50"><CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" /></div>
-                    <div className="flex-1"><p className="font-medium text-emerald-800 dark:text-emerald-400">Report Submitted</p><p className="text-xs text-emerald-600 dark:text-emerald-500">You can now end your shift when ready</p></div>
-                    <Badge className="bg-emerald-500"><Unlock className="w-3 h-3 mr-1" />Unlocked</Badge>
+                    <div className="flex-1">
+                      <p className="font-medium text-emerald-800 dark:text-emerald-400">Report Submitted</p>
+                      <p className="text-xs text-emerald-600 dark:text-emerald-500">You can now end your shift when ready</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => setReportDialogOpen(true)} className="h-8 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-100"><Edit3 className="w-3.5 h-3.5 mr-1" />Edit</Button>
+                      <Badge className="bg-emerald-500"><Unlock className="w-3 h-3 mr-1" />Unlocked</Badge>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -1221,18 +1432,65 @@ export default function EmployeeDashboard() {
         <Dialog open={reportDialogOpen} onOpenChange={setReportDialogOpen}>
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2"><FileText className="w-5 h-5 text-blue-500" />Submit Daily Report</DialogTitle>
-              <DialogDescription>Summarize your work for today. This is required before ending your shift.</DialogDescription>
+              <DialogTitle className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-500" />
+                {existingReportId ? "Edit Daily Report" : "Submit Daily Report"}
+              </DialogTitle>
+              <DialogDescription>
+                {existingReportId
+                  ? "Update your work summary for today. Good documentation helps everyone stay aligned."
+                  : "Summarize your work for today. This is required before ending your shift."}
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
-              <div className="space-y-2"><label className="text-sm font-medium">Work Details <span className="text-red-500">*</span></label><Textarea placeholder="What did you work on today? Describe your tasks, progress, and achievements..." className="min-h-[120px] resize-none" value={reportContent} onChange={(e) => setReportContent(e.target.value)} /></div>
-              <div className="space-y-2"><label className="text-sm font-medium">Loom Video Links</label><Input placeholder="https://loom.com/share/..." value={loomLinks} onChange={(e) => setLoomLinks(e.target.value)} /><p className="text-xs text-slate-500">Add links to any screen recordings or video updates</p></div>
-              <div className="space-y-2"><label className="text-sm font-medium">References</label><Input placeholder="Links to PRs, docs, designs, etc." value={references} onChange={(e) => setReferences(e.target.value)} /></div>
-              <div className="space-y-2"><label className="text-sm font-medium">Additional Notes</label><Textarea placeholder="Any blockers, questions, or notes for tomorrow..." className="min-h-[80px] resize-none" value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Work Details <span className="text-red-500">*</span></Label>
+                <Textarea placeholder="What did you work on today? Describe your tasks, progress, and achievements..." className="min-h-[120px] resize-none" value={reportContent} onChange={(e) => setReportContent(e.target.value)} />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-medium flex items-center gap-2">
+                  <Video className="w-4 h-4 text-red-500" />
+                  Loom Video Link {user?.department === "Development" && <span className="text-red-500">*</span>}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Only valid Loom URLs are accepted (e.g., https://www.loom.com/share/abc123)
+                </p>
+                <Input
+                  placeholder="https://www.loom.com/share/..."
+                  value={loomLinks}
+                  onChange={(e) => handleLoomLinkChange(e.target.value)}
+                  onBlur={validateLoomLinkOnBlur}
+                  className={cn(loomLinkError && "border-red-500 focus-visible:ring-red-500")}
+                />
+                {loomLinkError && (
+                  <p className="text-xs text-red-500 flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" />
+                    {loomLinkError}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">References <span className="text-red-500">*</span></Label>
+                <Input placeholder="Links to PRs, docs, designs, etc." value={references} onChange={(e) => setReferences(e.target.value)} />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Additional Notes <span className="text-red-500">*</span></Label>
+                <Textarea placeholder="Any blockers, questions, or notes for tomorrow..." className="min-h-[80px] resize-none" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setReportDialogOpen(false)}>Cancel</Button>
-              <Button onClick={submitReport} disabled={!reportContent.trim() || isSubmittingReport} className="gap-2">{isSubmittingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}Submit Report</Button>
+              <Button
+                onClick={submitReport}
+                disabled={isSubmittingReport || !isFormValid()}
+                className="gap-2"
+              >
+                {isSubmittingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : (existingReportId ? <FileCheck className="w-4 h-4" /> : <Send className="w-4 h-4" />)}
+                {existingReportId ? "Update Report" : "Submit Report"}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

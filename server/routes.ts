@@ -4,11 +4,11 @@ import { createServer, type Server } from "http";
 import session from "express-session";
 import bcrypt from "bcrypt";
 import { storage } from "./storage";
-import { 
-  insertUserSchema, 
-  insertShiftSchema, 
-  insertBreakSchema, 
-  loginSchema, 
+import {
+  insertUserSchema,
+  insertShiftSchema,
+  insertBreakSchema,
+  loginSchema,
   insertDailyShiftReportSchema,
   insertSpecialRequestSchema,
   insertRequestCommentSchema,
@@ -16,10 +16,10 @@ import {
   SPECIAL_REQUEST_STATUSES
 } from "@shared/schema";
 import { z } from "zod";
-import { 
-  notifyShiftStart, 
-  notifyShiftEnd, 
-  notifyBreakStart, 
+import {
+  notifyShiftStart,
+  notifyShiftEnd,
+  notifyBreakStart,
   notifyBreakEnd,
   notifyDailyReportSubmitted,
   type WasenderSettings
@@ -38,13 +38,15 @@ async function getWasenderSettings(): Promise<WasenderSettings> {
 const SALT_ROUNDS = 10;
 
 // ============= SHIFT CONFIGURATION =============
+// NOTE: User-specific shift times from database take precedence over these constants.
+// These are only used as fallbacks for open shifts or when user data is missing.
 const SHIFT_CONFIG = {
-  MORNING_START_HOUR: 8,      // 8 AM
-  MORNING_END_HOUR: 14,       // 2 PM
-  EVENING_START_HOUR: 14,     // 2 PM
-  EVENING_END_HOUR: 22,       // 10 PM
-  DAY_RESET_BUFFER_HOURS: 3,  // Hours after last shift to reset for new day
+  DAY_RESET_BUFFER_HOURS: 3,           // Hours after last shift to reset for new day
+  DEFAULT_STALE_SHIFT_MAX_HOURS: 12,   // Max hours before auto-closing open shifts
 };
+
+// ============= GRACE PERIOD CONFIGURATION =============
+const GRACE_PERIOD_MINUTES = 15; // 15-minute grace period before counting as late
 
 // Extend express-session types
 declare module "express-session" {
@@ -52,6 +54,140 @@ declare module "express-session" {
     userId: string;
     role: string;
   }
+}
+
+// ============= LATE CALCULATION HELPER =============
+/**
+ * Calculate late minutes with a grace period.
+ * 
+ * Rules:
+ * - If employee clocks in within the grace period (default 15 minutes), they are NOT late
+ * - If employee clocks in after the grace period, late minutes = total delay - grace period
+ * 
+ * Examples (with 15-minute grace period, shift starts at 9:00 AM):
+ * - Clock in at 9:00 AM → 0 minutes late
+ * - Clock in at 9:10 AM → 0 minutes late (within grace)
+ * - Clock in at 9:15 AM → 0 minutes late (exactly at grace limit)
+ * - Clock in at 9:16 AM → 1 minute late
+ * - Clock in at 9:30 AM → 15 minutes late (30 - 15 = 15)
+ * - Clock in at 10:00 AM → 45 minutes late (60 - 15 = 45)
+ * 
+ * @param clockInTime - The actual time the employee clocked in
+ * @param scheduledStartTime - The scheduled shift start time in "HH:MM" or "HH:MM:SS" format
+ * @param gracePeriodMinutes - Grace period in minutes (default: 15)
+ * @returns Number of late minutes (0 if on time or within grace period)
+ */
+function calculateLateMinutesWithGrace(
+  clockInTime: Date,
+  scheduledStartTime: string | null | undefined,
+  gracePeriodMinutes: number = GRACE_PERIOD_MINUTES
+): number {
+  // If no scheduled start time, no late calculation (open/flexible shift)
+  if (!scheduledStartTime) {
+    return 0;
+  }
+
+  try {
+    // Parse the scheduled start time (format: "HH:MM" or "HH:MM:SS")
+    const timeParts = scheduledStartTime.split(':');
+    const hours = parseInt(timeParts[0], 10);
+    const minutes = parseInt(timeParts[1], 10);
+
+    // Validate parsed values
+    if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      console.warn(`Invalid scheduled start time format: ${scheduledStartTime}`);
+      return 0;
+    }
+
+    // Create a date object for the scheduled start time on the same day as clock-in
+    const scheduledDate = new Date(clockInTime);
+    scheduledDate.setHours(hours, minutes, 0, 0);
+
+    // Calculate the total delay in minutes
+    const totalDelayMinutes = Math.floor((clockInTime.getTime() - scheduledDate.getTime()) / (1000 * 60));
+
+    // If clocked in early or on time, not late
+    if (totalDelayMinutes <= 0) {
+      return 0;
+    }
+
+    // If within grace period, not late
+    if (totalDelayMinutes <= gracePeriodMinutes) {
+      return 0;
+    }
+
+    // Late minutes = total delay - grace period
+    let lateMinutes = totalDelayMinutes - gracePeriodMinutes;
+
+    // Cap at reasonable maximum (4 hours = 240 minutes)
+    if (lateMinutes > 240) {
+      console.warn(`Capping late minutes from ${lateMinutes} to 240`);
+      lateMinutes = 240;
+    }
+
+    return lateMinutes;
+  } catch (error) {
+    console.error(`Error calculating late minutes:`, error);
+    return 0;
+  }
+}
+
+/**
+ * Get the scheduled start time for an employee based on their shift type and period
+ */
+function getScheduledStartTime(
+  user: any,
+  shiftPeriod: 'morning' | 'evening'
+): string | null {
+  if (!user) {
+    return null;
+  }
+
+  // Open/flexible shifts have no scheduled time
+  if (user.shiftType === 'open') {
+    return null;
+  }
+
+  // One shift type - use shiftStartTime for both morning and evening
+  if (user.shiftType === 'one_shift') {
+    return user.shiftStartTime || null;
+  }
+
+  // Two shifts type - use morning or evening start time
+  if (user.shiftType === 'two_shifts') {
+    if (shiftPeriod === 'morning') {
+      return user.morningShiftStart || null;
+    } else {
+      return user.eveningShiftStart || null;
+    }
+  }
+
+  // Fallback to shiftStartTime
+  return user.shiftStartTime || null;
+}
+
+/**
+ * Format time for logging
+ */
+function formatTime(date: Date): string {
+  return date.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  });
+}
+
+/**
+ * Parse user's configured time string (HH:MM) and convert to Date for a specific date
+ * @param dateStr - Date string in YYYY-MM-DD format
+ * @param timeStr - Time string in HH:MM or HH:MM:SS format
+ * @returns Date object with the specified date and time
+ */
+function parseUserTime(dateStr: string, timeStr: string): Date {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  const result = new Date(dateStr + 'T00:00:00');
+  result.setHours(hours, minutes || 0, 0, 0);
+  return result;
 }
 
 // Middleware to check if user is authenticated
@@ -76,25 +212,25 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
 // Helper function to clean empty strings to null/undefined
 function cleanEmployeeData(data: any): any {
   const cleaned: any = { ...data };
-  
+
   // Convert empty strings to null for optional fields
   const optionalFields = [
-    'email', 'department', 'position', 'phone', 
+    'email', 'department', 'position', 'phone',
     'address', 'emergencyContact', 'shiftStartTime', 'shiftEndTime',
     'morningShiftStart', 'morningShiftEnd', 'eveningShiftStart', 'eveningShiftEnd'
   ];
-  
+
   for (const field of optionalFields) {
     if (cleaned[field] === '' || cleaned[field] === undefined) {
       cleaned[field] = null;
     }
   }
-  
+
   // Handle department placeholder
-  if (cleaned.department === '_none_') {
+  if (cleaned.department === '_none_' || cleaned.department === 'none') {
     cleaned.department = null;
   }
-  
+
   // Handle salary - convert empty/undefined to null, or ensure it's a number
   if (cleaned.salary === '' || cleaned.salary === undefined || cleaned.salary === null) {
     cleaned.salary = null;
@@ -104,29 +240,30 @@ function cleanEmployeeData(data: any): any {
       cleaned.salary = null;
     }
   }
-  
+
   // Ensure boolean fields have proper defaults
   if (cleaned.isActive === undefined) {
     cleaned.isActive = true;
   }
-  
+
   // Ensure status has default
   if (!cleaned.status) {
     cleaned.status = 'active';
   }
-  
+
   // Ensure shiftType has default
   if (!cleaned.shiftType) {
     cleaned.shiftType = 'one_shift';
   }
-  
+
   // Ensure whatsappPreference has default
   if (!cleaned.whatsappPreference) {
     cleaned.whatsappPreference = 'both';
   }
-  
-  // Clean shift times based on shift type
+
+  // ===== IMPORTANT: Clean shift times based on shift type =====
   if (cleaned.shiftType === 'open') {
+    // Open/flexible shift - no fixed times
     cleaned.shiftStartTime = null;
     cleaned.shiftEndTime = null;
     cleaned.morningShiftStart = null;
@@ -134,43 +271,69 @@ function cleanEmployeeData(data: any): any {
     cleaned.eveningShiftStart = null;
     cleaned.eveningShiftEnd = null;
   } else if (cleaned.shiftType === 'one_shift') {
+    // Single shift - only use shiftStartTime and shiftEndTime
     cleaned.morningShiftStart = null;
     cleaned.morningShiftEnd = null;
     cleaned.eveningShiftStart = null;
     cleaned.eveningShiftEnd = null;
+    // Keep shiftStartTime and shiftEndTime as they are
   } else if (cleaned.shiftType === 'two_shifts') {
+    // Two shifts - only use morning and evening times
     cleaned.shiftStartTime = null;
     cleaned.shiftEndTime = null;
+    // Keep morningShiftStart, morningShiftEnd, eveningShiftStart, eveningShiftEnd as they are
   }
-  
+
   return cleaned;
 }
 
 // ============= ENHANCED DAY MANAGEMENT HELPERS =============
 
-// Get today's date in local timezone
+// ============= ENHANCED DAY MANAGEMENT HELPERS =============
+
+/**
+ * Get current date in Asia/Karachi timezone in YYYY-MM-DD format
+ */
 function getTodayDate(): string {
-  const now = new Date();
-  return now.toISOString().split("T")[0];
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Karachi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 }
 
-// Check if a timestamp is from a specific date
+/**
+ * Get current hour in Asia/Karachi timezone
+ */
+function getPakistaniHour(): number {
+  return parseInt(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Karachi',
+    hour: '2-digit',
+    hour12: false
+  }).format(new Date()), 10);
+}
+
+// Check if a timestamp is from a specific date (handling timezone)
 function isFromDate(timestamp: Date | string | null, dateStr: string): boolean {
   if (!timestamp) return false;
   const date = new Date(timestamp);
-  return date.toISOString().split("T")[0] === dateStr;
+  const tzDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Karachi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+  return tzDate === dateStr;
 }
 
-// Check if a timestamp is from today
+// Check if a timestamp is from today in Pakistani time
 function isToday(timestamp: Date | string | null): boolean {
   return isFromDate(timestamp, getTodayDate());
 }
 
-// Get current shift period based on time
-function getCurrentShiftPeriod(): "morning" | "evening" {
-  const hour = new Date().getHours();
-  return hour < SHIFT_CONFIG.EVENING_START_HOUR ? "morning" : "evening";
-}
+// NOTE: getCurrentShiftPeriod removed - shift period is now determined by which shift is active
+// rather than using hard-coded time cutoffs
 
 // Calculate the effective working date considering the 3-hour buffer after last shift
 async function getEffectiveWorkingDate(userId: string): Promise<{
@@ -184,10 +347,10 @@ async function getEffectiveWorkingDate(userId: string): Promise<{
 }> {
   const now = new Date();
   const today = getTodayDate();
-  
+
   // Get the most recent shift for this user
   const recentShifts = await storage.getShiftsByUser(userId, 2);
-  
+
   if (!recentShifts || recentShifts.length === 0) {
     // No previous shifts, use today
     return {
@@ -196,17 +359,17 @@ async function getEffectiveWorkingDate(userId: string): Promise<{
       lastShiftInfo: { date: null, lastClockOut: null, hoursSinceLastClockOut: null }
     };
   }
-  
+
   const lastShift = recentShifts[0];
-  
+
   // Determine the last clock out time (prefer evening, fallback to morning)
   const lastClockOut = lastShift.eveningClockOut || lastShift.morningClockOut;
-  
+
   // If no clock out, shift is still active
   if (!lastClockOut) {
     // Check if the shift is from today or yesterday
     const shiftDate = lastShift.date;
-    
+
     // If shift date is today, use today
     if (shiftDate === today) {
       return {
@@ -215,12 +378,12 @@ async function getEffectiveWorkingDate(userId: string): Promise<{
         lastShiftInfo: { date: shiftDate, lastClockOut: null, hoursSinceLastClockOut: null }
       };
     }
-    
+
     // If shift is from a previous day and still "active" (no clock out), 
     // it might be abandoned - check if we should start a new day
     const shiftDateObj = new Date(shiftDate + "T23:59:59");
     const hoursSinceShiftDate = (now.getTime() - shiftDateObj.getTime()) / (1000 * 60 * 60);
-    
+
     if (hoursSinceShiftDate >= SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS) {
       // More than buffer hours since the end of that day, consider it a new day
       return {
@@ -229,7 +392,7 @@ async function getEffectiveWorkingDate(userId: string): Promise<{
         lastShiftInfo: { date: shiftDate, lastClockOut: null, hoursSinceLastClockOut: hoursSinceShiftDate }
       };
     }
-    
+
     // Otherwise, continue with the previous shift's date
     return {
       workingDate: shiftDate,
@@ -237,11 +400,11 @@ async function getEffectiveWorkingDate(userId: string): Promise<{
       lastShiftInfo: { date: shiftDate, lastClockOut: null, hoursSinceLastClockOut: hoursSinceShiftDate }
     };
   }
-  
+
   // Calculate hours since last clock out
   const lastClockOutTime = new Date(lastClockOut);
   const hoursSinceLastClockOut = (now.getTime() - lastClockOutTime.getTime()) / (1000 * 60 * 60);
-  
+
   // If less than 3 hours since last clock out, continue with that shift's date
   if (hoursSinceLastClockOut < SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS) {
     return {
@@ -250,7 +413,7 @@ async function getEffectiveWorkingDate(userId: string): Promise<{
       lastShiftInfo: { date: lastShift.date, lastClockOut: lastClockOutTime, hoursSinceLastClockOut }
     };
   }
-  
+
   // More than 3 hours since last clock out - it's a new working day
   return {
     workingDate: today,
@@ -267,71 +430,117 @@ async function cleanupStaleRecords(userId: string, currentWorkingDate: string): 
   const now = new Date();
   let staleBreaksEnded = 0;
   let staleShiftsMarked = 0;
-  
+
   try {
     // End any active breaks that are not from the current working date
     const activeBreaks = await storage.getAllActiveBreaks(userId);
-    
+
     for (const brk of activeBreaks) {
       if (brk.date !== currentWorkingDate) {
         // This is a stale break from a previous day
         const startTime = new Date(brk.startTime);
         const endOfBreakDay = new Date(brk.date + "T23:59:59");
-        
+
         // Set end time to end of the break's day or current time, whichever is earlier
         const endTime = endOfBreakDay < now ? endOfBreakDay : now;
         const durationMinutes = Math.floor((endTime.getTime() - startTime.getTime()) / 60000);
-        
+
         await storage.updateBreak(brk.id, {
           endTime: endTime,
           durationMinutes: Math.min(durationMinutes, 480), // Cap at 8 hours
         });
-        
+
         await storage.createActivityLog({
           userId,
           action: "break_auto_cleanup",
           details: `Auto-ended stale ${brk.type} break from ${brk.date}`,
           timestamp: now,
         });
-        
+
         staleBreaksEnded++;
       }
     }
-    
-    // Mark incomplete shifts from previous days
+
+    // Get user to access their configured shift times
+    const user = await storage.getUser(userId);
+
+    // Mark incomplete shifts from previous days using USER-SPECIFIC times
     const incompleteShifts = await storage.getIncompleteShiftsBeforeDate(userId, currentWorkingDate);
-    
+
     for (const shift of incompleteShifts) {
       // Auto-complete shifts that weren't properly ended
       const updates: any = { status: "incomplete" };
-      
+
       if (shift.morningClockIn && !shift.morningClockOut) {
-        // Set morning clock out to end of morning shift
-        const morningEnd = new Date(shift.date + `T${String(SHIFT_CONFIG.MORNING_END_HOUR).padStart(2, '0')}:00:00`);
-        updates.morningClockOut = morningEnd;
+        let autoCloseTime: Date;
+
+        // Use user-specific configuration
+        if (user?.shiftType === 'one_shift' && user.shiftEndTime) {
+          // One shift: Use user's configured end time
+          autoCloseTime = parseUserTime(shift.date, user.shiftEndTime);
+          console.log(`[Stale Cleanup] One-shift user - using configured end time: ${user.shiftEndTime}`);
+        } else if (user?.shiftType === 'two_shifts' && user.morningShiftEnd) {
+          // Two shifts: Use morning shift end time
+          autoCloseTime = parseUserTime(shift.date, user.morningShiftEnd);
+          console.log(`[Stale Cleanup] Two-shifts user - using morning end time: ${user.morningShiftEnd}`);
+        } else {
+          // Fallback: 12 hours after clock-in for open/unconfigured shifts
+          autoCloseTime = new Date(shift.morningClockIn);
+          autoCloseTime.setHours(autoCloseTime.getHours() + SHIFT_CONFIG.DEFAULT_STALE_SHIFT_MAX_HOURS);
+          console.log(`[Stale Cleanup] No config found - using 12-hour fallback`);
+        }
+
+        // CRITICAL: Ensure auto-close time is not before clock-in time (prevent negative duration)
+        const clockInTime = new Date(shift.morningClockIn);
+        if (autoCloseTime <= clockInTime) {
+          console.warn(`[Stale Cleanup] Auto-close time ${autoCloseTime.toISOString()} is before clock-in ${clockInTime.toISOString()}. Adjusting...`);
+          // Set to either end of the same day or clock-in + 8 hours
+          autoCloseTime = new Date(clockInTime.getTime() + (8 * 60 * 60 * 1000));
+        }
+
+        updates.morningClockOut = autoCloseTime;
       }
-      
+
       if (shift.eveningClockIn && !shift.eveningClockOut) {
-        // Set evening clock out to end of evening shift
-        const eveningEnd = new Date(shift.date + `T${String(SHIFT_CONFIG.EVENING_END_HOUR).padStart(2, '0')}:00:00`);
-        updates.eveningClockOut = eveningEnd;
+        let autoCloseTime: Date;
+
+        // Use user-specific configuration
+        if (user?.shiftType === 'two_shifts' && user.eveningShiftEnd) {
+          // Two shifts: Use evening shift end time
+          autoCloseTime = parseUserTime(shift.date, user.eveningShiftEnd);
+          console.log(`[Stale Cleanup] Two-shifts user - using evening end time: ${user.eveningShiftEnd}`);
+        } else {
+          // Fallback: 12 hours after clock-in for open/unconfigured shifts
+          autoCloseTime = new Date(shift.eveningClockIn);
+          autoCloseTime.setHours(autoCloseTime.getHours() + SHIFT_CONFIG.DEFAULT_STALE_SHIFT_MAX_HOURS);
+          console.log(`[Stale Cleanup] No config found - using 12-hour fallback`);
+        }
+
+        // CRITICAL: Ensure auto-close time is not before clock-in time
+        const clockInTime = new Date(shift.eveningClockIn);
+        if (autoCloseTime <= clockInTime) {
+          console.warn(`[Stale Cleanup] Auto-close time ${autoCloseTime.toISOString()} is before clock-in ${clockInTime.toISOString()}. Adjusting...`);
+          autoCloseTime = new Date(clockInTime.getTime() + (8 * 60 * 60 * 1000));
+        }
+
+        updates.eveningClockOut = autoCloseTime;
       }
-      
+
       await storage.updateShift(shift.id, updates);
-      
+
       await storage.createActivityLog({
         userId,
         action: "shift_auto_complete",
         details: `Auto-completed incomplete shift from ${shift.date}`,
         timestamp: now,
       });
-      
+
       staleShiftsMarked++;
     }
   } catch (error) {
     console.error("Error cleaning up stale records:", error);
   }
-  
+
   return { staleBreaksEnded, staleShiftsMarked };
 }
 
@@ -360,33 +569,33 @@ export async function registerRoutes(
   );
 
   // ============= AUTH ROUTES =============
-  
+
   // Login
   app.post("/api/auth/login", async (req, res) => {
     try {
       const data = loginSchema.parse(req.body);
       const user = await storage.getUserByUsername(data.username);
-      
+
       if (!user) {
         return res.status(401).json({ error: "Invalid username or password" });
       }
-      
+
       const isValidPassword = await bcrypt.compare(data.password, user.password);
       if (!isValidPassword) {
         return res.status(401).json({ error: "Invalid username or password" });
       }
-      
+
       if (user.role !== data.role) {
         return res.status(401).json({ error: `This account is not registered as ${data.role}` });
       }
-      
+
       if (!user.isActive || user.status === "inactive") {
         return res.status(401).json({ error: "Account is deactivated" });
       }
-      
+
       req.session.userId = user.id;
       req.session.role = user.role;
-      
+
       const { password, ...safeUser } = user;
       res.json({ user: safeUser });
     } catch (error) {
@@ -397,20 +606,20 @@ export async function registerRoutes(
       res.status(500).json({ error: "Internal server error" });
     }
   });
-  
+
   // Get current user
   app.get("/api/auth/me", async (req, res) => {
     if (!req.session.userId) {
       return res.status(401).json({ error: "Not authenticated" });
     }
-    
+
     try {
       const user = await storage.getUser(req.session.userId);
       if (!user) {
-        req.session.destroy(() => {});
+        req.session.destroy(() => { });
         return res.status(401).json({ error: "User not found" });
       }
-      
+
       const { password, ...safeUser } = user;
       res.json({ user: safeUser });
     } catch (error) {
@@ -418,7 +627,7 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to get user" });
     }
   });
-  
+
   // Logout
   app.post("/api/auth/logout", (req, res) => {
     req.session.destroy((err) => {
@@ -428,64 +637,66 @@ export async function registerRoutes(
       res.json({ success: true });
     });
   });
-// ============= ADMIN SHIFT ROUTES =============
 
-// Get shifts for a specific date (Attendance Page)
-app.get("/api/admin/shifts", requireAdmin, async (req, res) => {
-  try {
-    const date = req.query.date as string;
-    
-    // Validate and parse date
-    if (!date) {
-      // Default to today if no date provided
-      const today = new Date().toISOString().split("T")[0];
-      const shifts = await storage.getShiftsByDate(today);
-      return res.json(shifts);
-    }
-    
-    // Validate date format (YYYY-MM-DD)
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(date)) {
-      return res.status(400).json({ 
-        error: "Invalid date format. Expected YYYY-MM-DD",
-        received: date 
-      });
-    }
-    
-    // Validate it's a real date
-    const parsedDate = new Date(date);
-    if (isNaN(parsedDate.getTime())) {
-      return res.status(400).json({ 
-        error: "Invalid date",
-        received: date 
-      });
-    }
-    
-    console.log(`Fetching shifts for date: ${date}`);
-    
-    const shifts = await storage.getShiftsByDate(date);
-    
-    console.log(`Found ${shifts.length} shifts for ${date}`);
-    
-    res.json(shifts);
-  } catch (error) {
-    console.error("Failed to fetch shifts for date:", error);
-    res.status(500).json({ error: "Failed to fetch attendance data" });
-  }
-});
+  // ============= ADMIN SHIFT ROUTES =============
 
-// Get today's shifts (Staff Activity Monitor) - Keep this for real-time monitoring
-app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
-  try {
-    const shifts = await storage.getTodayShifts();
-    res.json(shifts);
-  } catch (error) {
-    console.error("Failed to fetch today's shifts:", error);
-    res.status(500).json({ error: "Failed to fetch today's shifts" });
-  }
-});
+  // Get shifts for a specific date (Attendance Page)
+  app.get("/api/admin/shifts", requireAdmin, async (req, res) => {
+    try {
+      const date = req.query.date as string;
+
+      // Validate and parse date
+      if (!date) {
+        // Default to today if no date provided
+        const today = new Date().toISOString().split("T")[0];
+        const shifts = await storage.getShiftsByDate(today);
+        return res.json(shifts);
+      }
+
+      // Validate date format (YYYY-MM-DD)
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(date)) {
+        return res.status(400).json({
+          error: "Invalid date format. Expected YYYY-MM-DD",
+          received: date
+        });
+      }
+
+      // Validate it's a real date
+      const parsedDate = new Date(date);
+      if (isNaN(parsedDate.getTime())) {
+        return res.status(400).json({
+          error: "Invalid date",
+          received: date
+        });
+      }
+
+      console.log(`Fetching shifts for date: ${date}`);
+
+      const shifts = await storage.getShiftsByDate(date);
+
+      console.log(`Found ${shifts.length} shifts for ${date}`);
+
+      res.json(shifts);
+    } catch (error) {
+      console.error("Failed to fetch shifts for date:", error);
+      res.status(500).json({ error: "Failed to fetch attendance data" });
+    }
+  });
+
+  // Get today's shifts (Staff Activity Monitor)
+  app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
+    try {
+      const shifts = await storage.getTodayShifts();
+      res.json(shifts);
+    } catch (error) {
+      console.error("Failed to fetch today's shifts:", error);
+      res.status(500).json({ error: "Failed to fetch today's shifts" });
+    }
+  });
+
   // ============= ADMIN ROUTES =============
-  
+
   // Get dashboard stats
   app.get("/api/admin/stats", requireAdmin, async (req, res) => {
     try {
@@ -496,7 +707,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       res.status(500).json({ error: "Failed to fetch stats" });
     }
   });
-  
+
   // Get all employees
   app.get("/api/admin/employees", requireAdmin, async (req, res) => {
     try {
@@ -507,17 +718,17 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       res.status(500).json({ error: "Failed to fetch employees" });
     }
   });
-  
+
   // Create employee
   app.post("/api/admin/employees", requireAdmin, async (req, res) => {
     try {
       console.log("Creating employee with data:", JSON.stringify(req.body, null, 2));
-      
+
       // Validate password is provided for new users
       if (!req.body.password || req.body.password.trim() === '') {
         return res.status(400).json({ error: "Password is required for new employees" });
       }
-      
+
       // Validate required fields
       if (!req.body.username || req.body.username.trim() === '') {
         return res.status(400).json({ error: "Username is required" });
@@ -528,20 +739,20 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       if (!req.body.lastName || req.body.lastName.trim() === '') {
         return res.status(400).json({ error: "Last name is required" });
       }
-      
+
       // Check if username exists
       const existing = await storage.getUserByUsername(req.body.username);
       if (existing) {
         return res.status(400).json({ error: "Username already exists" });
       }
-      
+
       // Clean and prepare data
       const cleanedData = cleanEmployeeData(req.body);
-      
+
       // Hash password
       const hashedPassword = await bcrypt.hash(req.body.password, SALT_ROUNDS);
-      
-      // Create the user data object
+
+      // Create the user data object with ALL shift time fields
       const userData = {
         username: cleanedData.username.trim(),
         password: hashedPassword,
@@ -554,61 +765,71 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         salary: cleanedData.salary,
         status: cleanedData.status,
         shiftType: cleanedData.shiftType,
+        // One shift times
         shiftStartTime: cleanedData.shiftStartTime,
         shiftEndTime: cleanedData.shiftEndTime,
+        // Two shift times
+        morningShiftStart: cleanedData.morningShiftStart,
+        morningShiftEnd: cleanedData.morningShiftEnd,
+        eveningShiftStart: cleanedData.eveningShiftStart,
+        eveningShiftEnd: cleanedData.eveningShiftEnd,
+        // Other fields
         phone: cleanedData.phone,
         whatsappPreference: cleanedData.whatsappPreference,
         address: cleanedData.address,
         emergencyContact: cleanedData.emergencyContact,
         isActive: cleanedData.isActive,
       };
-      
-      console.log("Cleaned user data:", JSON.stringify({ ...userData, password: '[HIDDEN]' }, null, 2));
-      
+
+      console.log("Final user data to save:", JSON.stringify({
+        ...userData,
+        password: '[HIDDEN]',
+      }, null, 2));
+
       const user = await storage.createUser(userData);
       const { password, ...safeUser } = user;
-      
+
       console.log("Employee created successfully:", safeUser.id);
       res.json(safeUser);
     } catch (error: any) {
       console.error("Failed to create employee:", error);
       console.error("Error stack:", error.stack);
-      
+
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: error.errors[0].message });
       }
-      
+
       // Check for unique constraint violation
       if (error.code === '23505') {
         return res.status(400).json({ error: "Username or email already exists" });
       }
-      
+
       res.status(500).json({ error: error.message || "Failed to create employee" });
     }
   });
-  
+
   // Update employee
   app.patch("/api/admin/employees/:id", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
       console.log("Updating employee:", id, JSON.stringify(req.body, null, 2));
-      
+
       // Check if employee exists
       const existingUser = await storage.getUser(id);
       if (!existingUser) {
         return res.status(404).json({ error: "Employee not found" });
       }
-      
+
       // Clean and prepare data
       const cleanedData = cleanEmployeeData(req.body);
-      
+
       // Handle password - remove if empty, otherwise hash it
       if (cleanedData.password && cleanedData.password.trim() !== '') {
         cleanedData.password = await bcrypt.hash(cleanedData.password, SALT_ROUNDS);
       } else {
         delete cleanedData.password;
       }
-      
+
       // Check username uniqueness if it's being changed
       if (cleanedData.username && cleanedData.username !== existingUser.username) {
         const usernameExists = await storage.getUserByUsername(cleanedData.username);
@@ -616,56 +837,48 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           return res.status(400).json({ error: "Username already exists" });
         }
       }
-      
-      console.log("Cleaned update data:", JSON.stringify({ ...cleanedData, password: cleanedData.password ? '[HIDDEN]' : undefined }, null, 2));
-      
+
+      console.log("Cleaned update data:", JSON.stringify({
+        ...cleanedData,
+        password: cleanedData.password ? '[HIDDEN]' : undefined
+      }, null, 2));
+
       const user = await storage.updateUser(id, cleanedData);
       if (!user) {
         return res.status(404).json({ error: "Employee not found" });
       }
-      
+
       const { password, ...safeUser } = user;
       console.log("Employee updated successfully:", safeUser.id);
       res.json(safeUser);
     } catch (error: any) {
       console.error("Failed to update employee:", error);
       console.error("Error stack:", error.stack);
-      
+
       // Check for unique constraint violation
       if (error.code === '23505') {
         return res.status(400).json({ error: "Username or email already exists" });
       }
-      
+
       res.status(500).json({ error: error.message || "Failed to update employee" });
     }
   });
-  
+
   // Delete employee
   app.delete("/api/admin/employees/:id", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
-      
+
       // Check if trying to delete self
       if (id === req.session.userId) {
         return res.status(400).json({ error: "Cannot delete your own account" });
       }
-      
+
       await storage.deleteUser(id);
       res.json({ success: true });
     } catch (error) {
       console.error("Failed to delete employee:", error);
       res.status(500).json({ error: "Failed to delete employee" });
-    }
-  });
-
-  // Get today's shifts (Staff Activity Monitor)
-  app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
-    try {
-      const shifts = await storage.getTodayShifts();
-      res.json(shifts);
-    } catch (error) {
-      console.error("Failed to fetch today's shifts:", error);
-      res.status(500).json({ error: "Failed to fetch today's shifts" });
     }
   });
 
@@ -708,7 +921,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       if (!config?.instanceId || !config?.apiToken) {
         return res.status(400).json({ error: "WASENDER not configured" });
       }
-      
+
       await storage.updateWasenderConfig({ lastTested: new Date() });
       res.json({ success: true, message: "Connection successful" });
     } catch (error) {
@@ -746,45 +959,50 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
-      
+
       // Get the effective working date (considering 3-hour buffer)
       const { workingDate, isNewDay, lastShiftInfo } = await getEffectiveWorkingDate(userId);
-      
+
       // Clean up any stale records from previous days
       const cleanup = await cleanupStaleRecords(userId, workingDate);
-      
+
       // Get or create today's shift record
       let shift = await storage.getShiftByUserAndDate(userId, workingDate);
-      
+
+      // Determine which shift is active for period-specific logic (breaks, etc)
+      const isMorningActive = shift?.morningClockIn && !shift?.morningClockOut;
+      const isEveningActive = shift?.eveningClockIn && !shift?.eveningClockOut;
+      const activePeriod = isEveningActive ? "evening" : "morning";
+
       // Get active break (only for working date)
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
-      
+
       // Get all breaks for working date
       const breaks = await storage.getBreaksByUserAndDate(userId, workingDate);
-      
+
       // Get activity logs for working date
       const activityLogs = await storage.getActivityLogsByUser(userId, workingDate);
-      
+
       // Check if report is submitted for today's shift
       let hasSubmittedReport = false;
       if (shift) {
         const report = await storage.getReportByShiftId(shift.id);
         hasSubmittedReport = !!report;
       }
-      
+
       // Count breaks by type for working date
       const breakCounts = {
         prayer: breaks.filter(b => b.type === "prayer").length,
         meal: breaks.filter(b => b.type === "meal").length,
         urgent: breaks.filter(b => b.type === "urgent").length,
       };
-      
+
       // Calculate total break duration
       const totalBreakMinutes = breaks.reduce((acc, b) => acc + (b.durationMinutes || 0), 0);
-      
+
       // Get user's shift configuration
       const user = await storage.getUser(userId);
-      
+
       // Calculate next reset time
       let nextResetTime: string | null = null;
       if (shift) {
@@ -794,7 +1012,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           nextResetTime = resetTime.toISOString();
         }
       }
-      
+
       res.json({
         shift,
         activeBreak,
@@ -813,6 +1031,11 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           shiftType: user?.shiftType || 'one_shift',
           shiftStartTime: user?.shiftStartTime,
           shiftEndTime: user?.shiftEndTime,
+          morningShiftStart: (user as any)?.morningShiftStart,
+          morningShiftEnd: (user as any)?.morningShiftEnd,
+          eveningShiftStart: (user as any)?.eveningShiftStart,
+          eveningShiftEnd: (user as any)?.eveningShiftEnd,
+          gracePeriodMinutes: GRACE_PERIOD_MINUTES,
           resetBufferHours: SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS,
         }
       });
@@ -827,12 +1050,13 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const { workingDate, isNewDay, lastShiftInfo } = await getEffectiveWorkingDate(userId);
-      
+
       res.json({
         workingDate,
         isNewDay,
         lastShiftInfo,
         serverTime: new Date().toISOString(),
+        gracePeriodMinutes: GRACE_PERIOD_MINUTES,
         resetBufferHours: SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS,
       });
     } catch (error) {
@@ -841,7 +1065,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     }
   });
 
-  // Start morning shift (clock in) - FIXED LATE CALCULATION
+  // ============= MORNING SHIFT START - WITH 15-MINUTE GRACE PERIOD =============
   app.post("/api/employee/shift/morning/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
@@ -872,46 +1096,20 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
 
       // Get user to check their configured shift start time
       const user = await storage.getUser(userId);
-      let lateMinutes = 0;
 
-      if (user?.shiftStartTime) {
-        // Parse the configured shift start time (format: "HH:MM" or "HH:MM:SS")
-        const [hours, minutes] = user.shiftStartTime.split(":").map(Number);
+      // Determine the scheduled start time based on shift type
+      const scheduledStartTime = getScheduledStartTime(user, 'morning');
 
-        // Create shift start time for TODAY (not the workingDate necessarily)
-        const shiftStart = new Date(now);
-        shiftStart.setHours(hours, minutes, 0, 0);
+      // Calculate late minutes WITH 15-minute grace period
+      const lateMinutes = calculateLateMinutesWithGrace(now, scheduledStartTime, GRACE_PERIOD_MINUTES);
 
-        // Only count as late if clocked in AFTER the shift start time
-        if (now > shiftStart) {
-          lateMinutes = Math.floor((now.getTime() - shiftStart.getTime()) / 60000);
-
-          // Cap late minutes at reasonable maximum (4 hours = 240 minutes)
-          // This prevents absurd values if there's a timezone/date issue
-          if (lateMinutes > 240) {
-            console.warn(`Capping late minutes from ${lateMinutes} to 240 for user ${userId}`);
-            lateMinutes = 240;
-          }
-        }
-      } else {
-        // Fallback: Use default morning start time (8 AM)
-        const defaultStart = new Date(now);
-        defaultStart.setHours(8, 0, 0, 0);
-
-        if (now > defaultStart) {
-          lateMinutes = Math.floor((now.getTime() - defaultStart.getTime()) / 60000);
-
-          // Cap late minutes
-          if (lateMinutes > 240) {
-            lateMinutes = 240;
-          }
-        }
-      }
-
-      // Ensure late minutes is never negative
-      lateMinutes = Math.max(0, lateMinutes);
-
-      console.log(`User ${userId} clocking in. Shift start: ${user?.shiftStartTime || '08:00'}, Now: ${format(now, 'HH:mm')}, Late: ${lateMinutes}m`);
+      // Log for debugging
+      console.log(`[Morning Clock-In] User: ${userId}`);
+      console.log(`  - Shift Type: ${user?.shiftType || 'unknown'}`);
+      console.log(`  - Scheduled Start: ${scheduledStartTime || 'Not set (open shift)'}`);
+      console.log(`  - Actual Clock-In: ${formatTime(now)}`);
+      console.log(`  - Grace Period: ${GRACE_PERIOD_MINUTES} minutes`);
+      console.log(`  - Late Minutes: ${lateMinutes}`);
 
       if (shift) {
         // Update existing shift record
@@ -932,16 +1130,24 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         });
       }
 
+      // Create activity log with detailed info
+      let logDetails = "On time";
+      if (lateMinutes > 0) {
+        logDetails = `Late by ${lateMinutes} minutes (after ${GRACE_PERIOD_MINUTES}min grace period)`;
+      } else if (scheduledStartTime) {
+        logDetails = `On time (within ${GRACE_PERIOD_MINUTES}min grace period)`;
+      }
+
       await storage.createActivityLog({
         userId,
         action: "morning_clock_in",
-        details: lateMinutes > 0 ? `Late by ${lateMinutes} minutes` : "On time",
+        details: logDetails,
         timestamp: now,
       });
 
       // Send WhatsApp notification
       if (user) {
-        getWasenderSettings().then(settings => 
+        getWasenderSettings().then(settings =>
           notifyShiftStart({
             fullName: `${user.firstName} ${user.lastName}`,
             department: user.department || "Not Assigned"
@@ -949,37 +1155,48 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
 
-      res.json({ 
-        ...shift, 
-        workingDate, 
+      // Prepare response message
+      let message = `Morning shift started for ${workingDate}`;
+      if (lateMinutes > 0) {
+        message += ` (${lateMinutes}m late after ${GRACE_PERIOD_MINUTES}m grace period)`;
+      } else if (scheduledStartTime) {
+        message += ` (on time)`;
+      }
+
+      res.json({
+        ...shift,
+        workingDate,
         isNewDay,
-        message: `Morning shift started for ${workingDate}${lateMinutes > 0 ? ` (${lateMinutes}m late)` : ''}`
+        lateMinutes,
+        gracePeriodMinutes: GRACE_PERIOD_MINUTES,
+        scheduledStartTime,
+        message
       });
     } catch (error) {
       console.error("Failed to start morning shift:", error);
       res.status(500).json({ error: "Failed to start morning shift" });
     }
   });
-  
+
   // End morning shift (REQUIRES REPORT)
   app.post("/api/employee/shift/morning/end", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
-      
+
       // Get effective working date
       const { workingDate } = await getEffectiveWorkingDate(userId);
-      
+
       const shift = await storage.getShiftByUserAndDate(userId, workingDate);
-      
+
       if (!shift?.morningClockIn) {
         return res.status(400).json({ error: "Morning shift not started" });
       }
-      
+
       if (shift.morningClockOut) {
         return res.status(400).json({ error: "Morning shift already ended" });
       }
-      
+
       // Check if user is on break - auto end it
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
@@ -990,7 +1207,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           endTime: now,
           durationMinutes,
         });
-        
+
         await storage.createActivityLog({
           userId,
           action: "break_auto_end",
@@ -998,39 +1215,39 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           timestamp: now,
         });
       }
-      
+
       // Check if report is submitted (REQUIRED)
       const report = await storage.getReportByShiftId(shift.id);
       if (!report) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: "Please submit your daily report before ending the shift",
           code: "REPORT_REQUIRED"
         });
       }
-      
+
       // Calculate total work time
       const workMinutes = Math.floor(
         (now.getTime() - new Date(shift.morningClockIn).getTime()) / 60000
       );
-      
+
       const updated = await storage.updateShift(shift.id, {
         morningClockOut: now,
       });
-      
+
       await storage.createActivityLog({
         userId,
         action: "morning_clock_out",
         details: `Morning shift ended. Total time: ${Math.floor(workMinutes / 60)}h ${workMinutes % 60}m`,
         timestamp: now,
       });
-      
+
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       const todayBreaks = await storage.getBreaksByUserAndDate(userId, workingDate);
       // Filter breaks to only morning shift period
       const morningBreaks = todayBreaks.filter(b => b.shiftPeriod === "morning");
       const totalBreakMinutes = morningBreaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
-      
+
       if (user) {
         getWasenderSettings().then(settings =>
           notifyShiftEnd(
@@ -1044,10 +1261,10 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
-      
+
       // Calculate when the day will reset
       const resetTime = new Date(now.getTime() + (SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS * 60 * 60 * 1000));
-      
+
       res.json({
         ...updated,
         nextResetTime: resetTime.toISOString(),
@@ -1058,8 +1275,8 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       res.status(500).json({ error: "Failed to end morning shift" });
     }
   });
- 
-  // Start evening shift - FIXED LATE CALCULATION
+
+  // ============= EVENING SHIFT START - WITH 15-MINUTE GRACE PERIOD =============
   app.post("/api/employee/shift/evening/start", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
@@ -1089,44 +1306,28 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
 
       // Get user to check their configured shift times
       const user = await storage.getUser(userId);
-      let lateMinutes = 0;
 
-      // For evening shift, we need to determine the expected start time
-      // Option 1: Use shiftEndTime of morning shift as evening start (for two_shifts)
-      // Option 2: Use a fixed evening start time (e.g., 2 PM)
-      // Option 3: Use user's configured evening shift start if available
-
-      // Default evening start time is 2 PM (14:00)
-      let eveningStartHour = 14;
-      let eveningStartMinute = 0;
-
-      // If user has shiftType = 'two_shifts', use the gap between shifts
-      // For now, we'll use a default of 2 PM
-      if (user?.shiftType === 'two_shifts' && user?.shiftEndTime) {
-        // Evening shift starts after morning shift ends
-        // Use shiftEndTime as the evening start
-        const [hours, minutes] = user.shiftEndTime.split(":").map(Number);
-        eveningStartHour = hours;
-        eveningStartMinute = minutes;
+      // ✅ BLOCK ONE_SHIFT USERS from using evening endpoint
+      // They must use the morning endpoint for their single shift (uses morningClockIn/Out columns)
+      if (user?.shiftType === 'one_shift') {
+        return res.status(400).json({
+          error: "Your shift type is 'one_shift'. Please use the morning shift endpoint for your entire work day."
+        });
       }
 
-      const eveningStart = new Date(now);
-      eveningStart.setHours(eveningStartHour, eveningStartMinute, 0, 0);
+      // Determine the scheduled start time based on shift type
+      const scheduledStartTime = getScheduledStartTime(user, 'evening');
 
-      if (now > eveningStart) {
-        lateMinutes = Math.floor((now.getTime() - eveningStart.getTime()) / 60000);
+      // Calculate late minutes WITH 15-minute grace period
+      const lateMinutes = calculateLateMinutesWithGrace(now, scheduledStartTime, GRACE_PERIOD_MINUTES);
 
-        // Cap late minutes at reasonable maximum (4 hours = 240 minutes)
-        if (lateMinutes > 240) {
-          console.warn(`Capping evening late minutes from ${lateMinutes} to 240 for user ${userId}`);
-          lateMinutes = 240;
-        }
-      }
-
-      // Ensure late minutes is never negative
-      lateMinutes = Math.max(0, lateMinutes);
-
-      console.log(`User ${userId} evening clock in. Expected: ${eveningStartHour}:${eveningStartMinute}, Now: ${format(now, 'HH:mm')}, Late: ${lateMinutes}m`);
+      // Log for debugging
+      console.log(`[Evening Clock-In] User: ${userId}`);
+      console.log(`  - Shift Type: ${user?.shiftType || 'unknown'}`);
+      console.log(`  - Scheduled Start: ${scheduledStartTime || 'Not set (open shift)'}`);
+      console.log(`  - Actual Clock-In: ${formatTime(now)}`);
+      console.log(`  - Grace Period: ${GRACE_PERIOD_MINUTES} minutes`);
+      console.log(`  - Late Minutes: ${lateMinutes}`);
 
       if (shift) {
         shift = await storage.updateShift(shift.id, {
@@ -1145,10 +1346,18 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         });
       }
 
+      // Create activity log with detailed info
+      let logDetails = "Evening shift started on time";
+      if (lateMinutes > 0) {
+        logDetails = `Evening shift - Late by ${lateMinutes} minutes (after ${GRACE_PERIOD_MINUTES}min grace period)`;
+      } else if (scheduledStartTime) {
+        logDetails = `Evening shift started on time (within ${GRACE_PERIOD_MINUTES}min grace period)`;
+      }
+
       await storage.createActivityLog({
         userId,
         action: "evening_clock_in",
-        details: lateMinutes > 0 ? `Evening shift - Late by ${lateMinutes} minutes` : "Evening shift started on time",
+        details: logDetails,
         timestamp: now,
       });
 
@@ -1162,37 +1371,48 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
 
+      // Prepare response message
+      let message = `Evening shift started for ${workingDate}`;
+      if (lateMinutes > 0) {
+        message += ` (${lateMinutes}m late after ${GRACE_PERIOD_MINUTES}m grace period)`;
+      } else if (scheduledStartTime) {
+        message += ` (on time)`;
+      }
+
       res.json({
         ...shift,
         workingDate,
         isNewDay,
-        message: `Evening shift started for ${workingDate}${lateMinutes > 0 ? ` (${lateMinutes}m late)` : ''}`
+        lateMinutes,
+        gracePeriodMinutes: GRACE_PERIOD_MINUTES,
+        scheduledStartTime,
+        message
       });
     } catch (error) {
       console.error("Failed to start evening shift:", error);
       res.status(500).json({ error: "Failed to start evening shift" });
     }
   });
-  
+
   // End evening shift (REQUIRES REPORT)
   app.post("/api/employee/shift/evening/end", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
-      
+
       // Get effective working date
       const { workingDate } = await getEffectiveWorkingDate(userId);
-      
+
       const shift = await storage.getShiftByUserAndDate(userId, workingDate);
-      
+
       if (!shift?.eveningClockIn) {
         return res.status(400).json({ error: "Evening shift not started" });
       }
-      
+
       if (shift.eveningClockOut) {
         return res.status(400).json({ error: "Evening shift already ended" });
       }
-      
+
       // Check if user is on break - auto end it
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
@@ -1203,7 +1423,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           endTime: now,
           durationMinutes,
         });
-        
+
         await storage.createActivityLog({
           userId,
           action: "break_auto_end",
@@ -1211,38 +1431,38 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           timestamp: now,
         });
       }
-      
+
       // Check if report is submitted (REQUIRED)
       const report = await storage.getReportByShiftId(shift.id);
       if (!report) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: "Please submit your daily report before ending the shift",
           code: "REPORT_REQUIRED"
         });
       }
-      
+
       const workMinutes = Math.floor(
         (now.getTime() - new Date(shift.eveningClockIn).getTime()) / 60000
       );
-      
+
       const updated = await storage.updateShift(shift.id, {
         eveningClockOut: now,
       });
-      
+
       await storage.createActivityLog({
         userId,
         action: "evening_clock_out",
         details: `Evening shift ended. Total time: ${Math.floor(workMinutes / 60)}h ${workMinutes % 60}m`,
         timestamp: now,
       });
-      
+
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       const todayBreaks = await storage.getBreaksByUserAndDate(userId, workingDate);
       // Filter breaks to only evening shift period
       const eveningBreaks = todayBreaks.filter(b => b.shiftPeriod === "evening");
       const totalBreakMinutes = eveningBreaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
-      
+
       if (user) {
         getWasenderSettings().then(settings =>
           notifyShiftEnd(
@@ -1256,10 +1476,10 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
-      
+
       // Calculate when the day will reset
       const resetTime = new Date(now.getTime() + (SHIFT_CONFIG.DAY_RESET_BUFFER_HOURS * 60 * 60 * 1000));
-      
+
       res.json({
         ...updated,
         nextResetTime: resetTime.toISOString(),
@@ -1277,39 +1497,42 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       const userId = req.session.userId!;
       const now = new Date();
       const { type } = req.body;
-      
+
       if (!["prayer", "meal", "urgent"].includes(type)) {
         return res.status(400).json({ error: "Invalid break type. Must be prayer, meal, or urgent" });
       }
-      
+
       // Get effective working date
       const { workingDate } = await getEffectiveWorkingDate(userId);
-      
+
       // Check if shift is active for working date
       const shift = await storage.getShiftByUserAndDate(userId, workingDate);
-      
+
       const isMorningActive = shift?.morningClockIn && !shift?.morningClockOut;
       const isEveningActive = shift?.eveningClockIn && !shift?.eveningClockOut;
-      
+
       if (!isMorningActive && !isEveningActive) {
         return res.status(400).json({ error: "No active shift. Please clock in first" });
       }
-      
+
+      // Determine period based on which shift is currently active
+      const currentPeriod = isEveningActive ? "evening" : "morning";
+
       // Check if already on break
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (activeBreak) {
         return res.status(400).json({ error: "Already on a break. Please end your current break first" });
       }
-      
-      const currentPeriod = isMorningActive ? "morning" : "evening";
-      
+
+      // The previous line `const currentPeriod = isMorningActive ? "morning" : "evening";` was redundant and removed.
+
       // Check break limits for working date
       const todayBreaks = await storage.getBreaksByUserAndDate(userId, workingDate);
-      
+
       if (type === "prayer") {
         const prayerBreaks = todayBreaks.filter(b => b.type === "prayer");
         if (prayerBreaks.length >= BREAK_LIMITS.prayer.maxPerDay) {
-          return res.status(400).json({ 
+          return res.status(400).json({
             error: `Maximum prayer breaks (${BREAK_LIMITS.prayer.maxPerDay}) reached for today`,
             currentCount: prayerBreaks.length,
             maxAllowed: BREAK_LIMITS.prayer.maxPerDay
@@ -1318,7 +1541,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       } else if (type === "meal") {
         const mealBreaks = todayBreaks.filter(b => b.type === "meal");
         if (mealBreaks.length >= BREAK_LIMITS.meal.maxPerDay) {
-          return res.status(400).json({ 
+          return res.status(400).json({
             error: "Meal break already taken today",
             currentCount: mealBreaks.length,
             maxAllowed: BREAK_LIMITS.meal.maxPerDay
@@ -1329,14 +1552,14 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           b => b.type === "urgent" && b.shiftPeriod === currentPeriod
         );
         if (urgentBreaksThisPeriod.length >= BREAK_LIMITS.urgent.maxPerShift) {
-          return res.status(400).json({ 
+          return res.status(400).json({
             error: `Maximum urgent breaks (${BREAK_LIMITS.urgent.maxPerShift}) reached for this ${currentPeriod} shift`,
             currentCount: urgentBreaksThisPeriod.length,
             maxAllowed: BREAK_LIMITS.urgent.maxPerShift
           });
         }
       }
-      
+
       const breakRecord = await storage.createBreak({
         userId,
         shiftId: shift?.id || null,
@@ -1345,14 +1568,14 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         shiftPeriod: currentPeriod,
         startTime: now,
       });
-      
+
       await storage.createActivityLog({
         userId,
         action: "break_start",
         details: `Started ${type} break during ${currentPeriod} shift`,
         timestamp: now,
       });
-      
+
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       if (user) {
@@ -1364,7 +1587,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
-      
+
       res.json(breakRecord);
     } catch (error) {
       console.error("Failed to start break:", error);
@@ -1377,19 +1600,19 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
-      
+
       // Get effective working date
       const { workingDate } = await getEffectiveWorkingDate(userId);
-      
+
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (!activeBreak) {
         return res.status(400).json({ error: "No active break to end" });
       }
-      
+
       const durationMinutes = Math.floor(
         (now.getTime() - new Date(activeBreak.startTime).getTime()) / 60000
       );
-      
+
       // Warn if break was too long
       let warning = null;
       const maxBreakMinutes = {
@@ -1397,23 +1620,23 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         meal: 45,
         urgent: 10
       };
-      
+
       if (durationMinutes > maxBreakMinutes[activeBreak.type as keyof typeof maxBreakMinutes]) {
         warning = `Break exceeded recommended duration of ${maxBreakMinutes[activeBreak.type as keyof typeof maxBreakMinutes]} minutes`;
       }
-      
+
       const updated = await storage.updateBreak(activeBreak.id, {
         endTime: now,
         durationMinutes,
       });
-      
+
       await storage.createActivityLog({
         userId,
         action: "break_end",
         details: `Ended ${activeBreak.type} break (${durationMinutes} minutes)${warning ? ` - ${warning}` : ''}`,
         timestamp: now,
       });
-      
+
       // Send WhatsApp notification
       const user = await storage.getUser(userId);
       if (user) {
@@ -1426,7 +1649,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
-      
+
       res.json({ ...updated, warning });
     } catch (error) {
       console.error("Failed to end break:", error);
@@ -1439,38 +1662,38 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const now = new Date();
-      
+
       // Get effective working date
       const { workingDate } = await getEffectiveWorkingDate(userId);
-      
+
       const activeBreak = await storage.getActiveBreakForDate(userId, workingDate);
       if (!activeBreak) {
         return res.json({ message: "No active break to end" });
       }
-      
+
       const durationMinutes = Math.floor(
         (now.getTime() - new Date(activeBreak.startTime).getTime()) / 60000
       );
-      
+
       const updated = await storage.updateBreak(activeBreak.id, {
         endTime: now,
         durationMinutes,
       });
-      
+
       await storage.createActivityLog({
         userId,
         action: "break_force_end",
         details: `Force-ended ${activeBreak.type} break (${durationMinutes} minutes)`,
         timestamp: now,
       });
-      
+
       res.json(updated);
     } catch (error) {
       console.error("Failed to force end break:", error);
       res.status(500).json({ error: "Failed to force end break" });
     }
   });
-  
+
   // Get employee's shift history
   app.get("/api/employee/shifts", requireAuth, async (req, res) => {
     try {
@@ -1502,19 +1725,19 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const today = getTodayDate();
-      
+
       // Clean up all stale records
       const cleanup = await cleanupStaleRecords(userId, today);
-      
+
       await storage.createActivityLog({
         userId,
         action: "day_force_reset",
         details: `Manual day reset. Cleaned: ${cleanup.staleBreaksEnded} breaks, ${cleanup.staleShiftsMarked} shifts`,
         timestamp: new Date(),
       });
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         message: "Dashboard reset for new day",
         date: today,
         cleanup
@@ -1530,12 +1753,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const today = getTodayDate();
-      
+
       // Clean up all stale records
       const cleanup = await cleanupStaleRecords(userId, today);
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         message: "Dashboard reset for new day",
         date: today,
         cleanup
@@ -1547,17 +1770,17 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   });
 
   // ============= TARGETS ROUTES =============
-  
+
   app.get("/api/employee/targets", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const month = req.query.month as string || new Date().toISOString().slice(0, 7);
-      
+
       const target = await storage.getTargetByUserAndMonth(userId, month);
       if (!target) {
         return res.json({ target: null, items: [] });
       }
-      
+
       const items = await storage.getTargetItemsByTarget(target.id);
       res.json({ target, items });
     } catch (error) {
@@ -1569,36 +1792,35 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   app.post("/api/employee/targets/items", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      const { type, name, source, clientType, contactLink, date } = req.body;
+      const { type, name, source, contactLink, date } = req.body;
       const month = (date as string).slice(0, 7);
-      
+
       if (!["meeting", "order"].includes(type)) {
         return res.status(400).json({ error: "Invalid target item type" });
       }
-      
+
       let target = await storage.getTargetByUserAndMonth(userId, month);
       if (!target) {
         target = await storage.createTarget({ userId, month });
       }
-      
+
       const item = await storage.createTargetItem({
         targetId: target.id,
         userId,
         type,
         name,
         source,
-        clientType,
         contactLink,
         date,
       });
-      
+
       await storage.createActivityLog({
         userId,
         action: `target_${type}_added`,
         details: `Added ${type}: ${name}`,
         timestamp: new Date(),
       });
-      
+
       res.json(item);
     } catch (error) {
       console.error("Failed to add target item:", error);
@@ -1611,30 +1833,30 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const { id } = req.params;
-      
+
       const item = await storage.getTargetItemById(id);
       if (!item) {
         return res.status(404).json({ error: "Target item not found" });
       }
-      
+
       // Only allow deleting own items that aren't verified
       if (item.userId !== userId) {
         return res.status(403).json({ error: "Not authorized to delete this item" });
       }
-      
+
       if (item.verified) {
         return res.status(400).json({ error: "Cannot delete verified items" });
       }
-      
+
       await storage.deleteTargetItem(id);
-      
+
       await storage.createActivityLog({
         userId,
         action: `target_${item.type}_deleted`,
         details: `Deleted ${item.type}: ${item.name}`,
         timestamp: new Date(),
       });
-      
+
       res.json({ success: true });
     } catch (error) {
       console.error("Failed to delete target item:", error);
@@ -1647,37 +1869,36 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const { id } = req.params;
-      const { name, source, clientType, contactLink, date } = req.body;
-      
+      const { name, source, contactLink, date } = req.body;
+
       const item = await storage.getTargetItemById(id);
       if (!item) {
         return res.status(404).json({ error: "Target item not found" });
       }
-      
+
       // Only allow updating own items that aren't verified
       if (item.userId !== userId) {
         return res.status(403).json({ error: "Not authorized to update this item" });
       }
-      
+
       if (item.verified) {
         return res.status(400).json({ error: "Cannot update verified items" });
       }
-      
+
       const updated = await storage.updateTargetItem(id, {
         name,
         source,
-        clientType,
         contactLink,
         date,
       });
-      
+
       await storage.createActivityLog({
         userId,
         action: `target_${item.type}_updated`,
         details: `Updated ${item.type}: ${name}`,
         timestamp: new Date(),
       });
-      
+
       res.json(updated);
     } catch (error) {
       console.error("Failed to update target item:", error);
@@ -1690,7 +1911,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const month = req.query.month as string || new Date().toISOString().slice(0, 7);
-      
+
       const items = await storage.getTargetItemsByUserAndMonth(userId, month);
       res.json(items);
     } catch (error) {
@@ -1704,17 +1925,17 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const month = req.query.month as string || new Date().toISOString().slice(0, 7);
-      
+
       // Get or create target for this user/month
       let target = await storage.getTargetByUserAndMonth(userId, month);
-      
+
       // Get all items for this user and month
       const items = await storage.getTargetItemsByUserAndMonth(userId, month);
-      
+
       // Calculate stats
       const meetings = items.filter(i => i.type === "meeting");
       const orders = items.filter(i => i.type === "order");
-      
+
       res.json({
         target: target || { meetingTarget: 20, orderTarget: 5 }, // Default targets
         meetings: {
@@ -1748,14 +1969,14 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   app.post("/api/admin/targets", requireAdmin, async (req, res) => {
     try {
       const { userId, month, meetingTarget, orderTarget } = req.body;
-      
+
       let target = await storage.getTargetByUserAndMonth(userId, month);
       if (target) {
         target = await storage.updateTarget(target.id, { meetingTarget, orderTarget });
       } else {
         target = await storage.createTarget({ userId, month, meetingTarget, orderTarget });
       }
-      
+
       res.json(target);
     } catch (error) {
       console.error("Failed to set targets:", error);
@@ -1767,17 +1988,17 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
       const adminId = req.session.userId!;
-      
+
       const item = await storage.updateTargetItem(id, {
         verified: true,
         verifiedAt: new Date(),
         verifiedBy: adminId,
       });
-      
+
       if (!item) {
         return res.status(404).json({ error: "Target item not found" });
       }
-      
+
       res.json(item);
     } catch (error) {
       console.error("Failed to verify target item:", error);
@@ -1789,17 +2010,17 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   app.patch("/api/admin/targets/items/:id/unverify", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
-      
+
       const item = await storage.updateTargetItem(id, {
         verified: false,
         verifiedAt: null,
         verifiedBy: null,
       });
-      
+
       if (!item) {
         return res.status(404).json({ error: "Target item not found" });
       }
-      
+
       res.json(item);
     } catch (error) {
       console.error("Failed to unverify target item:", error);
@@ -1811,7 +2032,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   app.delete("/api/admin/targets/items/:id", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
-      
+
       await storage.deleteTargetItem(id);
       res.json({ success: true });
     } catch (error) {
@@ -1832,7 +2053,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   });
 
   // ============= ANALYTICS ROUTES =============
-  
+
   app.get("/api/admin/analytics/attendance", requireAdmin, async (req, res) => {
     try {
       const startDate = req.query.startDate as string;
@@ -1862,12 +2083,32 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const today = new Date().toISOString().split("T")[0];
-      
-      // Validate required fields
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Validate required fields for EVERYONE
       if (!req.body.workDetails || req.body.workDetails.trim() === '') {
         return res.status(400).json({ error: "Work details are required" });
       }
-      
+      if (!req.body.notes || req.body.notes.trim() === '') {
+        return res.status(400).json({ error: "Notes are required (please describe challenges or progress)" });
+      }
+      if (!req.body.references || req.body.references.trim() === '') {
+        return res.status(400).json({ error: "References/Links are required" });
+      }
+
+      // MANDATORY Loom video for Development department
+      const isDevelopment = user.department === 'Development';
+      const loomVideos = req.body.loomVideos;
+      const hasLoom = loomVideos && loomVideos.trim() !== '' && loomVideos.trim() !== '[]';
+
+      if (isDevelopment && !hasLoom) {
+        return res.status(400).json({ error: "Loom video is compulsory to end the shift for the Development team" });
+      }
+
       // Get or validate shift
       let shiftId = req.body.shiftId;
       if (!shiftId) {
@@ -1877,35 +2118,34 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         }
         shiftId = shift.id;
       }
-      
+
       // Check if report already exists for this shift
       const existingReport = await storage.getReportByShiftId(shiftId);
       if (existingReport) {
         return res.status(400).json({ error: "Report already submitted for this shift" });
       }
-      
+
       const reportData = {
         userId,
         shiftId,
         date: req.body.date || today,
         workDetails: req.body.workDetails.trim(),
-        loomVideos: req.body.loomVideos || null,
-        notes: req.body.notes || null,
-        references: req.body.references || null,
+        loomVideos: hasLoom ? loomVideos.trim() : null,
+        notes: req.body.notes.trim(),
+        references: req.body.references.trim(),
         month: req.body.month || new Date().toISOString().slice(0, 7),
       };
-      
+
       const report = await storage.createDailyShiftReport(reportData);
-      
+
       await storage.createActivityLog({
         userId,
         action: "report_submitted",
         details: "Daily shift report submitted",
         timestamp: new Date(),
       });
-      
+
       // Send WhatsApp notification
-      const user = await storage.getUser(userId);
       if (user) {
         getWasenderSettings().then(settings =>
           notifyDailyReportSubmitted(
@@ -1915,7 +2155,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
           )
         ).catch(err => console.error("WhatsApp notification error:", err));
       }
-      
+
       res.json(report);
     } catch (error: any) {
       console.error("Failed to create daily report:", error);
@@ -1923,6 +2163,59 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         return res.status(400).json({ error: error.errors[0].message });
       }
       res.status(500).json({ error: error.message || "Failed to create daily report" });
+    }
+  });
+
+  app.patch("/api/reports/daily/:id", requireAuth, async (req, res) => {
+    try {
+      const userId = req.session.userId!;
+      const { id } = req.params;
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(401).json({ error: "User not found" });
+
+      const report = await storage.getDailyShiftReport(id);
+      if (!report) return res.status(404).json({ error: "Report not found" });
+      if (report.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to edit this report" });
+      }
+
+      // Same validation as POST
+      if (!req.body.workDetails || req.body.workDetails.trim() === '') {
+        return res.status(400).json({ error: "Work details are required" });
+      }
+      if (!req.body.notes || req.body.notes.trim() === '') {
+        return res.status(400).json({ error: "Notes are required" });
+      }
+      if (!req.body.references || req.body.references.trim() === '') {
+        return res.status(400).json({ error: "References/Links are required" });
+      }
+
+      const isDevelopment = user.department === 'Development';
+      const loomVideos = req.body.loomVideos;
+      const hasLoom = loomVideos && loomVideos.trim() !== '' && loomVideos.trim() !== '[]';
+
+      if (isDevelopment && !hasLoom) {
+        return res.status(400).json({ error: "Loom video is compulsory to stay accountable in the Development team" });
+      }
+
+      const updatedReport = await storage.updateDailyShiftReport(id, {
+        workDetails: req.body.workDetails.trim(),
+        loomVideos: hasLoom ? loomVideos.trim() : null,
+        notes: req.body.notes.trim(),
+        references: req.body.references.trim(),
+      });
+
+      await storage.createActivityLog({
+        userId,
+        action: "report_updated",
+        details: "Daily shift report updated",
+        timestamp: new Date(),
+      });
+
+      res.json(updatedReport);
+    } catch (error: any) {
+      console.error("Failed to update daily report:", error);
+      res.status(500).json({ error: error.message || "Failed to update daily report" });
     }
   });
 
@@ -1954,12 +2247,12 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const today = new Date().toISOString().split("T")[0];
-      
+
       const shift = await storage.getShiftByUserAndDate(userId, today);
       if (!shift) {
         return res.json({ hasReport: false, report: null });
       }
-      
+
       const report = await storage.getReportByShiftId(shift.id);
       res.json({ hasReport: !!report, report });
     } catch (error) {
@@ -1989,7 +2282,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   app.post("/api/requests/special", requireAuth, async (req, res) => {
     try {
       const userId = req.session.userId!;
-      
+
       // Validate required fields
       if (!req.body.title || req.body.title.trim() === '') {
         return res.status(400).json({ error: "Title is required" });
@@ -1997,7 +2290,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       if (!req.body.details || req.body.details.trim() === '') {
         return res.status(400).json({ error: "Details are required" });
       }
-      
+
       const requestData = {
         userId,
         title: req.body.title.trim(),
@@ -2006,20 +2299,20 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
         status: "sent_for_approval",
         archived: false,
       };
-      
+
       console.log("Creating special request:", requestData);
-      
+
       const request = await storage.createSpecialRequest(requestData);
-      
+
       console.log("Created special request:", request);
-      
+
       await storage.createActivityLog({
         userId,
         action: "special_request_created",
         details: `Created special request: ${requestData.title}`,
         timestamp: new Date(),
       });
-      
+
       res.json(request);
     } catch (error: any) {
       console.error("Failed to create request:", error);
@@ -2035,13 +2328,13 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const userId = req.session.userId!;
       const month = req.query.month as string || new Date().toISOString().slice(0, 7);
-      
+
       console.log("Fetching requests for user:", userId, "month:", month);
-      
+
       const requests = await storage.getSpecialRequestsByUser(userId, month);
-      
+
       console.log("Found requests:", requests.length);
-      
+
       res.json(requests);
     } catch (error) {
       console.error("Failed to fetch requests:", error);
@@ -2054,18 +2347,18 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
     try {
       const month = req.query.month as string || new Date().toISOString().slice(0, 7);
       const status = req.query.status as string;
-      
+
       console.log("Admin fetching requests - Month:", month, "Status:", status);
-      
+
       let requests;
       if (status && status !== "all") {
         requests = await storage.getSpecialRequestsByStatusWithUser(status, month);
       } else {
         requests = await storage.getSpecialRequestsByMonthWithUser(month);
       }
-      
+
       console.log("Found admin requests:", requests.length);
-      
+
       res.json(requests);
     } catch (error) {
       console.error("Failed to fetch requests:", error);
@@ -2077,13 +2370,13 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
   app.patch("/api/admin/requests/special/:id", requireAdmin, async (req, res) => {
     try {
       const { status } = req.body;
-      
+
       if (!status || !SPECIAL_REQUEST_STATUSES.includes(status)) {
         return res.status(400).json({ error: "Invalid status" });
       }
 
       const request = await storage.updateSpecialRequest(req.params.id, { status });
-      
+
       if (!request) {
         return res.status(404).json({ error: "Request not found" });
       }
@@ -2104,7 +2397,7 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       const userId = req.session.userId!;
       const isAdmin = req.session.role === "admin";
       const { comment, statusChange } = req.body;
-      
+
       if (!comment || comment.trim() === '') {
         return res.status(400).json({ error: "Comment is required" });
       }
@@ -2211,71 +2504,69 @@ app.get("/api/admin/shifts/today", requireAdmin, async (req, res) => {
       res.status(500).json({ error: "Failed to archive month" });
     }
   });
-  
-// ============= ADMIN TARGET BOARD SUMMARY =============
 
-// Get all BD employees' targets summary for admin Target Board
-app.get("/api/admin/targets/summary", requireAdmin, async (req, res) => {
-  try {
-    const month = req.query.month as string || new Date().toISOString().slice(0, 7);
-    
-    // Get all employees
-    const allUsers = await storage.getAllUsers();
-    
-    // Filter to only Business Development employees who are active
-    const bdEmployees = allUsers.filter(u => 
-      u.role === "employee" && 
-      u.status === "active" && 
-      u.department === "Business Development"
-    );
-    
-    // Build data for each employee
-    const employeesData = await Promise.all(
-      bdEmployees.map(async (employee) => {
-        // Get target for this employee and month
-        const target = await storage.getTargetByUserAndMonth(employee.id, month);
-        
-        // Get all target items for this employee and month
-        const items = await storage.getTargetItemsByUserAndMonth(employee.id, month);
-        
-        const meetings = items.filter((i: any) => i.type === "meeting");
-        const orders = items.filter((i: any) => i.type === "order");
-        
-        // Remove password from employee data
-        const { password, ...safeEmployee } = employee;
-        
-        return {
-          employee: safeEmployee,
-          target: target || { meetingTarget: 20, orderTarget: 5 },
-          meetings: {
-            total: meetings.length,
-            verified: meetings.filter((m: any) => m.verified).length,
-            items: meetings,
-          },
-          orders: {
-            total: orders.length,
-            verified: orders.filter((o: any) => o.verified).length,
-            items: orders,
-          },
-        };
-      })
-    );
-    
-    // Calculate totals
-    const totals = {
-      totalMeetings: employeesData.reduce((sum, e) => sum + e.meetings.total, 0),
-      verifiedMeetings: employeesData.reduce((sum, e) => sum + e.meetings.verified, 0),
-      totalOrders: employeesData.reduce((sum, e) => sum + e.orders.total, 0),
-      verifiedOrders: employeesData.reduce((sum, e) => sum + e.orders.verified, 0),
-      totalEmployees: employeesData.length,
-    };
-    
-    res.json({ employees: employeesData, totals });
-  } catch (error) {
-    console.error("Error fetching admin targets summary:", error);
-    res.status(500).json({ error: "Failed to fetch targets summary" });
-  }
-});
+  // ============= ADMIN TARGET BOARD SUMMARY =============
+
+  // Get all BD employees' targets summary for admin Target Board
+  app.get("/api/admin/targets/summary", requireAdmin, async (req, res) => {
+    try {
+      const month = req.query.month as string || new Date().toISOString().slice(0, 7);
+
+      // Get all employees
+      const allUsers = await storage.getAllUsers();
+
+      // Filter to only Business Development employees who are active
+      const bdEmployees = allUsers.filter(u =>
+        u.role === "employee" &&
+        u.status === "active" &&
+        u.department === "Business Development"
+      );
+
+      // Build data for each employee
+      const employeesData = await Promise.all(
+        bdEmployees.map(async (employee) => {
+          // Get target for this employee and month
+          const target = await storage.getTargetByUserAndMonth(employee.id, month);
+
+          // Get all target items for this employee and month
+          const items = await storage.getTargetItemsByUserAndMonth(employee.id, month);
+
+          const meetings = items.filter((i: any) => i.type === "meeting");
+          const orders = items.filter((i: any) => i.type === "order");
+
+          return {
+            employee,
+            target: target || { meetingTarget: 20, orderTarget: 5 },
+            meetings: {
+              total: meetings.length,
+              verified: meetings.filter((m: any) => m.verified).length,
+              items: meetings,
+            },
+            orders: {
+              total: orders.length,
+              verified: orders.filter((o: any) => o.verified).length,
+              items: orders,
+            },
+          };
+        })
+      );
+
+      // Calculate totals
+      const totals = {
+        totalMeetings: employeesData.reduce((sum, e) => sum + e.meetings.total, 0),
+        verifiedMeetings: employeesData.reduce((sum, e) => sum + e.meetings.verified, 0),
+        totalOrders: employeesData.reduce((sum, e) => sum + e.orders.total, 0),
+        verifiedOrders: employeesData.reduce((sum, e) => sum + e.orders.verified, 0),
+        totalEmployees: employeesData.length,
+      };
+
+      res.json({ employees: employeesData, totals });
+    } catch (error) {
+      console.error("Error fetching admin targets summary:", error);
+      res.status(500).json({ error: "Failed to fetch targets summary" });
+    }
+  });
+
   // ============= DEBUG ROUTE (Remove in production) =============
   app.get("/api/debug/requests", requireAdmin, async (req, res) => {
     try {
