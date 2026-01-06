@@ -2867,131 +2867,80 @@ export async function registerRoutes(
     }
   });
 
-  // Get ALL completed tasks for Development team (Admin view)
-  app.get("/api/admin/clickup/all-tasks", requireAdmin, async (req, res) => {
-    try {
-      const { month } = req.query;
+// server/routes.ts - Find the /api/admin/clickup/all-tasks route and update it
+app.get("/api/admin/clickup/all-tasks", requireAdmin, async (req, res) => {
+  try {
+    const { month } = req.query; // Expecting "YYYY-MM"
+    
+    if (!month) {
+      return res.status(400).json({ error: "Month parameter required (YYYY-MM)" });
+    }
 
-      if (!month) {
-        return res.status(400).json({ error: "Month parameter required (format: YYYY-MM)" });
-      }
+    // 1. Calculate timestamps for the requested month
+    const [year, monthNum] = (month as string).split("-").map(Number);
+    // Start: 1st day of month 00:00:00
+    const startOfMonth = new Date(Date.UTC(year, monthNum - 1, 1, 0, 0, 0)).getTime();
+    // End: Last day of month 23:59:59
+    const endOfMonth = new Date(Date.UTC(year, monthNum, 0, 23, 59, 59, 999)).getTime();
 
-      // Get all Development employees
-      const allUsers = await storage.getAllUsers();
-      const devEmployees = allUsers.filter(u =>
-        u.role === "employee" &&
-        u.status === "active" &&
-        u.department === "Development" &&
-        u.email
-      );
+    // 2. Get all active Development employees from our DB
+    const allUsers = await storage.getAllUsers();
+    const devEmployees = allUsers.filter(u => 
+      u.department === "Development" && 
+      u.status === "active" && 
+      u.email
+    );
 
-      // Calculate date range
-      const [year, monthNum] = (month as string).split("-").map(Number);
-      const startOfMonth = new Date(year, monthNum - 1, 1).getTime();
-      const endOfMonth = new Date(year, monthNum, 0, 23, 59, 59, 999).getTime();
-
-      // Fetch tasks for each employee
-      const employeeTasksPromises = devEmployees.map(async (employee) => {
-        try {
-          const clickUpUser = await findClickUpUserByEmail(employee.email!);
-
-          if (!clickUpUser) {
-            return {
-              employee: {
-                id: employee.id,
-                firstName: employee.firstName,
-                lastName: employee.lastName,
-                email: employee.email,
-              },
-              clickUpUser: null,
-              tasks: [],
-              error: "Not linked to ClickUp"
-            };
-          }
-
-          // Build query
-          const params = new URLSearchParams();
-          params.append("assignees[]", clickUpUser.id.toString());
-          params.append("include_closed", "true");
-          params.append("page", "0");
-          params.append("space_ids[]", CLICKUP_CONFIG.SPACE_ID);
-          params.append("statuses[]", "complete");
-          params.append("date_done_gt", startOfMonth.toString());
-          params.append("date_done_lt", endOfMonth.toString());
-
-          const data = await clickUpFetch(`/team/${CLICKUP_CONFIG.TEAM_ID}/task?${params.toString()}`);
-
+    // 3. Process each employee
+    const results = await Promise.all(devEmployees.map(async (employee) => {
+      try {
+        const clickUpUser = await findClickUpUserByEmail(employee.email!);
+        
+        if (!clickUpUser) {
           return {
-            employee: {
-              id: employee.id,
-              firstName: employee.firstName,
-              lastName: employee.lastName,
-              email: employee.email,
-            },
-            clickUpUser: {
-              id: clickUpUser.id,
-              username: clickUpUser.username,
-              email: clickUpUser.email,
-            },
-            tasks: data.tasks || [],
-            taskCount: data.tasks?.length || 0,
-          };
-        } catch (error: any) {
-          console.error(`Error fetching tasks for ${employee.email}:`, error);
-          return {
-            employee: {
-              id: employee.id,
-              firstName: employee.firstName,
-              lastName: employee.lastName,
-              email: employee.email,
-            },
+            employee,
             clickUpUser: null,
             tasks: [],
-            error: error.message
+            taskCount: 0,
+            status: "not_linked"
           };
         }
-      });
 
-      const results = await Promise.all(employeeTasksPromises);
+        // Fetch tasks for this specific user
+        const params = new URLSearchParams();
+        params.append("assignees[]", clickUpUser.id.toString());
+        params.append("include_closed", "true");
+        params.append("statuses[]", "complete");
+        params.append("space_ids[]", CLICKUP_CONFIG.SPACE_ID);
+        params.append("date_done_gt", startOfMonth.toString());
+        params.append("date_done_lt", endOfMonth.toString());
 
-      // Calculate totals
-      const totals = {
-        totalEmployees: results.length,
-        linkedEmployees: results.filter(r => r.clickUpUser).length,
-        totalTasks: results.reduce((sum, r) => sum + (r.tasks?.length || 0), 0),
-      };
+        const data = await clickUpFetch(`/team/${CLICKUP_CONFIG.TEAM_ID}/task?${params.toString()}`);
 
-      res.json({
-        month,
-        employees: results,
-        totals,
-      });
-    } catch (error: any) {
-      console.error("ClickUp All Tasks API Error:", error);
-      res.status(500).json({ error: error.message || "Failed to fetch all ClickUp tasks" });
-    }
-  });
+        return {
+          employee,
+          clickUpUser,
+          tasks: data.tasks || [],
+          taskCount: data.tasks?.length || 0,
+          status: "linked"
+        };
+      } catch (err) {
+        return { employee, tasks: [], taskCount: 0, status: "error", error: "API Failure" };
+      }
+    }));
 
-  // Refresh ClickUp cache (admin utility)
-  app.post("/api/admin/clickup/refresh-cache", requireAdmin, async (req, res) => {
-    try {
-      // Clear cache
-      clickUpMembersCache = null;
-      clickUpMembersCacheTime = 0;
+    // 4. Calculate Summary Totals
+    const totals = {
+      totalEmployees: devEmployees.length,
+      linkedEmployees: results.filter(r => r.status === "linked").length,
+      totalTasks: results.reduce((sum, r) => sum + r.taskCount, 0),
+    };
 
-      // Fetch fresh data
-      const data = await getClickUpMembers();
-
-      res.json({
-        success: true,
-        message: "ClickUp cache refreshed",
-        memberCount: data.team.members.length
-      });
-    } catch (error: any) {
-      console.error("ClickUp Cache Refresh Error:", error);
-      res.status(500).json({ error: error.message || "Failed to refresh cache" });
-    }
-  });
+    res.json({ month, employees: results, totals });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
   // ============= NOTIFICATION ROUTES =============
 
   // Get recent notifications for employee
