@@ -300,18 +300,65 @@ export class DatabaseStorage implements IStorage {
     return user || undefined;
   }
 
-  async deleteUser(id: string): Promise<void> {
-    // Delete related records first
-    await db.delete(requestComments).where(eq(requestComments.userId, id));
-    await db.delete(specialRequests).where(eq(specialRequests.userId, id));
-    await db.delete(dailyShiftReports).where(eq(dailyShiftReports.userId, id));
-    await db.delete(targetItems).where(eq(targetItems.userId, id));
-    await db.delete(targets).where(eq(targets.userId, id));
-    await db.delete(activityLogs).where(eq(activityLogs.userId, id));
-    await db.delete(breaks).where(eq(breaks.userId, id));
-    await db.delete(shifts).where(eq(shifts.userId, id));
-    await db.delete(users).where(eq(users.id, id));
+async deleteUser(userId: string): Promise<void> {
+  // 1. Get all special request IDs belonging to this user
+  const userRequests = await db
+    .select({ id: specialRequests.id })
+    .from(specialRequests)
+    .where(eq(specialRequests.userId, userId));
+  
+  const requestIds = userRequests.map(r => r.id);
+
+  // 2. Delete comments associated with those requests
+  if (requestIds.length > 0) {
+    await db
+      .delete(requestComments)
+      .where(inArray(requestComments.requestId, requestIds));
   }
+
+  // 3. Delete comments made BY this user on other requests
+  await db
+    .delete(requestComments)
+    .where(eq(requestComments.userId, userId));
+
+  // 4. Delete special requests themselves
+  await db
+    .delete(specialRequests)
+    .where(eq(specialRequests.userId, userId));
+
+  // 5. Delete reports associated with user's shifts
+  await db
+    .delete(dailyShiftReports)
+    .where(eq(dailyShiftReports.userId, userId));
+
+  // 6. Delete target items and targets
+  await db
+    .delete(targetItems)
+    .where(eq(targetItems.userId, userId));
+  
+  await db
+    .delete(targets)
+    .where(eq(targets.userId, userId));
+
+  // 7. Delete breaks and shifts
+  await db
+    .delete(breaks)
+    .where(eq(breaks.userId, userId));
+    
+  await db
+    .delete(shifts)
+    .where(eq(shifts.userId, userId));
+
+  // 8. Delete activity logs
+  await db
+    .delete(activityLogs)
+    .where(eq(activityLogs.userId, userId));
+
+  // 9. Finally, delete the user
+  await db
+    .delete(users)
+    .where(eq(users.id, userId));
+}
 
   async getAllUsers(): Promise<SafeUser[]> {
     const allUsers = await db.select({
